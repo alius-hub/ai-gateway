@@ -1,0 +1,172 @@
+:root {
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #0f172a;
+  background: #f8fafc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.layout-shell {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  min-height: 100vh;
+}
+
+.layout-sidebar {
+  padding: 24px 16px;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+.layout-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 24px;
+}
+
+.layout-brand__name {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.layout-brand__desc {
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.layout-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.layout-menu__item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.layout-menu__item.is-active {
+  background: #1d4ed8;
+  color: #eff6ff;
+}
+
+.layout-menu__section {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.layout-menu__item.is-active .layout-menu__section {
+  color: #bfdbfe;
+}
+
+.layout-menu__title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.layout-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.layout-header {
+  padding: 24px 32px 0;
+}
+
+.layout-header__inner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.layout-header__title {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.layout-header__subtitle {
+  margin-top: 6px;
+  color: #64748b;
+}
+
+.layout-content {
+  padding: 24px 32px 32px;
+}
+
+.layout-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.layout-user__name {
+  font-weight: 700;
+}
+
+.layout-user__role {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.layout-user__logout {
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #eff6ff;
+  cursor: pointer;
+}
+
+.page-card {
+  padding: 32px;
+  border-radius: 20px;
+  background: #ffffff;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.08);
+}
+
+.page-card__badge {
+  display: inline-flex;
+  margin-bottom: 16px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.page-card__title {
+  margin: 0 0 12px;
+  font-size: 30px;
+}
+
+.page-card__description {
+  margin: 0;
+  max-width: 720px;
+  color: #475569;
+  line-height: 1.7;
+}

@@ -156,6 +156,10 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+backend/.env.*
+frontend/.env.*
+!backend/.env.example
+!frontend/.env.example
 
 # Spyder project settings
 .spyderproject
@@ -202,6 +206,10 @@ cython_debug/
 # .vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
 
 # Ruff stuff:
 .ruff_cache/
