@@ -5,7 +5,6 @@ import type {
   AccessModelItem,
   AggregateModelItem,
   CredentialItem,
-  NodeItem,
   OrganizationItem,
   ProjectItem,
   ProviderItem,
@@ -38,8 +37,4 @@ export function fetchAccessModels() {
 
 export function fetchAggregateModels() {
   return getPage<AggregateModelItem>("/aggregate-models");
-}
-
-export function fetchNodes() {
-  return getPage<NodeItem>("/nodes");
 }

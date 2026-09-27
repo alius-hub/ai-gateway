@@ -2,10 +2,11 @@
 import { computed, onMounted, ref } from "vue";
 
 import { fetchOverviewSummary } from "@/api/overview";
+import { locale, t } from "@/i18n";
 import type { OverviewSummary } from "@/types/overview";
+import { showToast } from "@/utils/toast";
 
 const loading = ref(false);
-const errorMessage = ref("");
 const summary = ref<OverviewSummary | null>(null);
 
 const metrics = computed(() => {
@@ -14,14 +15,13 @@ const metrics = computed(() => {
   }
 
   return [
-    { label: "总调用量", value: formatInteger(summary.value.total_requests), hint: "累计请求次数" },
-    { label: "总 Token", value: formatInteger(summary.value.total_tokens), hint: "累计消耗 Token" },
-    { label: "总成本", value: formatCurrency(summary.value.total_cost), hint: "累计预估成本" },
-    { label: "组织数", value: formatInteger(summary.value.organization_count), hint: "已创建组织" },
-    { label: "项目数", value: formatInteger(summary.value.project_count), hint: "已创建项目" },
-    { label: "凭证数", value: formatInteger(summary.value.key_count), hint: "可用 API Key 数量" },
-    { label: "模型数", value: formatInteger(summary.value.model_count), hint: "接入模型总数" },
-    { label: "节点数", value: formatInteger(summary.value.node_count), hint: "节点治理总量" },
+    { label: t("总调用量"), value: formatInteger(summary.value.total_requests), hint: t("累计请求次数") },
+    { label: t("总 Token"), value: formatInteger(summary.value.total_tokens), hint: t("累计消耗 Token") },
+    { label: t("总成本"), value: formatCurrency(summary.value.total_cost), hint: t("累计预估成本") },
+    { label: t("组织数"), value: formatInteger(summary.value.organization_count), hint: t("已创建组织") },
+    { label: t("项目数"), value: formatInteger(summary.value.project_count), hint: t("已创建项目") },
+    { label: t("凭证数"), value: formatInteger(summary.value.key_count), hint: t("可用 API Key 数量") },
+    { label: t("模型数"), value: formatInteger(summary.value.model_count), hint: t("接入模型总数") },
   ];
 });
 
@@ -32,32 +32,25 @@ const statusItems = computed(() => {
 
   return [
     {
-      label: "数据库状态",
-      value: summary.value.database_status === "connected" ? "已连接" : "未就绪",
+      label: t("数据库状态"),
+      value: t(summary.value.database_status === "connected" ? "已连接" : "未就绪"),
+      tone: summary.value.database_status === "connected" ? "success" : "warning",
     },
     {
-      label: "数据来源",
-      value: summary.value.data_source === "database" ? "实时数据库" : "启动占位数据",
+      label: t("数据来源"),
+      value: t(summary.value.data_source === "database" ? "实时数据库" : "启动占位数据"),
+      tone: summary.value.data_source === "database" ? "success" : "warning",
     },
     {
-      label: "健康供应商",
+      label: t("健康供应商"),
       value: `${formatInteger(summary.value.healthy_provider_count)} / ${formatInteger(summary.value.provider_count)}`,
-    },
-    {
-      label: "活跃节点",
-      value: `${formatInteger(summary.value.active_node_count)} / ${formatInteger(summary.value.node_count)}`,
+      tone: "neutral",
     },
   ];
 });
 
-const alignedRequirements = [
-  "平台总调用量、Token 消耗和成本总览",
-  "组织、项目、凭证、模型、节点等核心资源统计",
-  "供应商健康状态与节点活跃度基础视图",
-];
-
 function formatInteger(value: number): string {
-  return new Intl.NumberFormat("zh-CN").format(value);
+  return new Intl.NumberFormat(locale.value).format(value);
 }
 
 function formatCurrency(value: string): string {
@@ -66,7 +59,7 @@ function formatCurrency(value: string): string {
     return value;
   }
 
-  return new Intl.NumberFormat("zh-CN", {
+  return new Intl.NumberFormat(locale.value, {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: amount === 0 ? 0 : 2,
@@ -76,12 +69,11 @@ function formatCurrency(value: string): string {
 
 async function loadSummary() {
   loading.value = true;
-  errorMessage.value = "";
 
   try {
     summary.value = await fetchOverviewSummary();
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "总览数据加载失败";
+    showToast("error", t(error instanceof Error ? error.message : "总览数据加载失败"));
   } finally {
     loading.value = false;
   }
@@ -93,183 +85,229 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="dashboard">
-    <div class="page-card dashboard-hero">
-      <div>
-        <div class="page-card__badge">工作台 / 平台总览</div>
-        <h1 class="page-card__title">平台运行总览</h1>
-        <p class="page-card__description">
-          这一版先把需求文档中的核心总览指标落下来，前端直接消费后端汇总接口，方便我们后续继续扩展趋势图、告警卡片和排行榜。
-        </p>
-      </div>
-
-      <button class="dashboard-hero__action" type="button" :disabled="loading" @click="loadSummary">
-        {{ loading ? "刷新中..." : "刷新数据" }}
+  <section class="page-stack dashboard">
+    <div class="page-heading">
+      <p class="page-card__description">{{ t("查看平台调用量、资源规模与服务运行状态。") }}</p>
+      <button class="page-action" type="button" :disabled="loading" @click="loadSummary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 11a8 8 0 1 0-2 6M20 4v7h-7" />
+        </svg>
+        {{ t(loading ? "刷新中..." : "刷新数据") }}
       </button>
     </div>
 
-    <div v-if="errorMessage" class="dashboard-error">
-      {{ errorMessage }}
+    <div v-if="loading && !summary" class="page-card dashboard-loading" role="status">
+      {{ t("正在加载平台数据...") }}
     </div>
 
     <div v-if="summary" class="dashboard-grid">
-      <article v-for="item in metrics" :key="item.label" class="dashboard-metric">
-        <span class="dashboard-metric__label">{{ item.label }}</span>
-        <strong class="dashboard-metric__value">{{ item.value }}</strong>
+      <article v-for="(item, index) in metrics" :key="item.label" class="page-card dashboard-metric">
+        <div class="dashboard-metric__top">
+          <span class="dashboard-metric__label">{{ item.label }}</span>
+          <span class="dashboard-metric__index">{{ String(index + 1).padStart(2, "0") }}</span>
+        </div>
+        <strong class="dashboard-metric__value" :title="item.value">{{ item.value }}</strong>
         <span class="dashboard-metric__hint">{{ item.hint }}</span>
       </article>
     </div>
 
     <div v-if="summary" class="dashboard-panels">
       <section class="page-card dashboard-panel">
-        <h2 class="dashboard-panel__title">系统状态</h2>
-        <p class="dashboard-panel__desc">{{ summary.status_message }}</p>
-
+        <div class="dashboard-panel__heading">
+          <div>
+            <h2 class="dashboard-panel__title">{{ t("服务状态") }}</h2>
+            <p class="dashboard-panel__desc">{{ t(summary.status_message) }}</p>
+          </div>
+          <span class="dashboard-panel__tag">{{ t("实时概况") }}</span>
+        </div>
         <div class="dashboard-status-list">
           <div v-for="item in statusItems" :key="item.label" class="dashboard-status-item">
             <span>{{ item.label }}</span>
-            <strong>{{ item.value }}</strong>
+            <strong :class="`dashboard-status-item--${item.tone}`">{{ item.value }}</strong>
           </div>
         </div>
       </section>
 
       <section class="page-card dashboard-panel">
-        <h2 class="dashboard-panel__title">已对齐需求</h2>
-        <p class="dashboard-panel__desc">
-          对应 `docs/requirements-aligned-design.md` 中“平台总览”的首批落地项。
-        </p>
-
-        <ul class="dashboard-checklist">
-          <li v-for="item in alignedRequirements" :key="item">
-            {{ item }}
-          </li>
-        </ul>
-
-        <p class="dashboard-panel__foot">
-          数据生成时间：{{ new Date(summary.generated_at).toLocaleString("zh-CN") }}
-        </p>
+        <div class="dashboard-panel__heading">
+          <div>
+            <h2 class="dashboard-panel__title">{{ t("统计说明") }}</h2>
+            <p class="dashboard-panel__desc">{{ t("当前展示平台累计指标及基础资源数量。") }}</p>
+          </div>
+          <span class="dashboard-panel__tag">{{ t("数据快照") }}</span>
+        </div>
+        <div class="dashboard-detail">
+          <span>{{ t("统计时间") }}</span>
+          <strong>{{ new Date(summary.generated_at).toLocaleString(locale) }}</strong>
+        </div>
+        <div class="dashboard-detail">
+          <span>{{ t("数据来源") }}</span>
+          <strong>{{ t(summary.data_source === "database" ? "实时数据库" : "启动占位数据") }}</strong>
+        </div>
+        <div class="dashboard-detail">
+          <span>{{ t("成本口径") }}</span>
+          <strong>{{ t("预估费用 · USD") }}</strong>
+        </div>
+        <p class="dashboard-panel__foot">{{ t("更多趋势及明细将在分析看板中展示。") }}</p>
       </section>
     </div>
   </section>
 </template>
 
 <style scoped>
-.dashboard {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.dashboard-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.dashboard-hero__action {
-  padding: 12px 16px;
-  border: 0;
-  border-radius: 12px;
-  background: #1d4ed8;
-  color: #eff6ff;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.dashboard-hero__action:disabled {
-  cursor: not-allowed;
-  opacity: 0.7;
-}
-
-.dashboard-error {
-  padding: 14px 16px;
-  border-radius: 14px;
-  background: #fee2e2;
-  color: #b91c1c;
+.dashboard-loading {
+  color: #708192;
+  font-size: 13px;
 }
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .dashboard-metric {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+  min-height: 142px;
   padding: 20px;
-  border-radius: 18px;
-  background: #ffffff;
-  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.08);
+}
+
+.dashboard-metric__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .dashboard-metric__label {
-  color: #64748b;
-  font-size: 13px;
+  color: #6e8090;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dashboard-metric__index {
+  color: #b4c9c5;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .dashboard-metric__value {
-  font-size: 30px;
-  line-height: 1.1;
+  overflow: hidden;
+  color: #1c3441;
+  font-size: clamp(22px, 2vw, 30px);
+  letter-spacing: -0.04em;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dashboard-metric__hint {
-  color: #475569;
-  font-size: 13px;
+  margin-top: auto;
+  color: #91a0ad;
+  font-size: 11px;
 }
 
 .dashboard-panels {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.dashboard-panel__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 80px;
 }
 
 .dashboard-panel__title {
-  margin: 0 0 10px;
-  font-size: 20px;
+  margin: 0 0 8px;
+  color: #1b2d3e;
+  font-size: 16px;
 }
 
 .dashboard-panel__desc {
-  margin: 0 0 18px;
-  color: #475569;
-  line-height: 1.7;
+  margin: 0;
+  color: #8493a0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.dashboard-panel__tag {
+  flex: none;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: #f0f7f5;
+  color: #428a7d;
+  font-size: 10px;
 }
 
 .dashboard-status-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 
-.dashboard-status-item {
+.dashboard-status-item,
+.dashboard-detail {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: #f8fafc;
+  min-height: 47px;
+  border-top: 1px solid #edf1f3;
+  color: #788998;
+  font-size: 12px;
 }
 
-.dashboard-checklist {
-  margin: 0;
-  padding-left: 20px;
-  color: #334155;
-  line-height: 1.8;
+.dashboard-status-item strong,
+.dashboard-detail strong {
+  color: #263b4b;
+  font-size: 12px;
+  font-weight: 650;
+  text-align: right;
+}
+
+.dashboard-status-item strong.dashboard-status-item--success {
+  color: #19816d;
+}
+
+.dashboard-status-item strong.dashboard-status-item--warning {
+  color: #ae7740;
 }
 
 .dashboard-panel__foot {
-  margin: 18px 0 0;
-  color: #64748b;
-  font-size: 13px;
+  margin: 16px 0 0;
+  color: #9aa7b3;
+  font-size: 11px;
 }
 
-@media (max-width: 960px) {
-  .dashboard-hero {
-    flex-direction: column;
+@media (max-width: 1200px) {
+  .dashboard-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .dashboard-panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 520px) {
+  .dashboard-grid {
+    gap: 10px;
+  }
+
+  .dashboard-metric {
+    min-height: 125px;
+    padding: 16px;
+  }
+
+  .dashboard-metric__value {
+    font-size: 22px;
   }
 }
 </style>

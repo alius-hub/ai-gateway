@@ -5,7 +5,6 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 ENV_FILE_MAP = {
     "dev": ".env.dev",
     "uat": ".env.uat",
@@ -30,8 +29,9 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="postgresql+psycopg://postgres:postgres@localhost:5432/ai_gateway"
     )
-    redis_url: str = Field(default="redis://localhost:6379/0")
+    redis_url: str = Field(default="redis://:Dev2026!@localhost:6379/0")
     jwt_secret_key: str = Field(default="change-me-in-production")
+    provider_encryption_key: str = Field(default="")
     access_token_expire_minutes: int = Field(default=120)
     allowed_origins: list[str] = Field(
         default_factory=lambda: [

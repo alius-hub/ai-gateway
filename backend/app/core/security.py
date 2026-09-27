@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -12,13 +14,24 @@ ALGORITHM = "HS256"
 
 
 def hash_password(password: str) -> str:
-    return f"sha256${hashlib.sha256(password.encode('utf-8')).hexdigest()}"
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260000)
+    return f"pbkdf2_sha256${salt.hex()}${digest.hex()}"
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    if password_hash.startswith("pbkdf2_sha256$"):
+        try:
+            _, salt, digest = password_hash.split("$")
+            actual = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 260000)
+            return hmac.compare_digest(actual, bytes.fromhex(digest))
+        except ValueError:
+            return False
     if password_hash.startswith("sha256$"):
-        return hash_password(password) == password_hash
-    return password == password_hash
+        return hmac.compare_digest(
+            hashlib.sha256(password.encode()).hexdigest(), password_hash.removeprefix("sha256$")
+        )
+    return hmac.compare_digest(password, password_hash)
 
 
 def create_access_token(subject: str, expires_minutes: int | None = None) -> str:

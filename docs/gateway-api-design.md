@@ -51,6 +51,50 @@ Authorization: Bearer <api_key>
 x-api-key: <api_key>
 ```
 
+Key 可使用默认 `agw_` 或管理员创建/轮换时指定的自定义前缀。网关始终通过
+完整 Key 的 SHA-256 哈希鉴权，不依赖固定的前缀判断身份。
+
+当前已实现的 `/v1/models`、`/v1/chat/completions`、`/v1/embeddings`、
+`/v1/rerank`、`/v1/ocr`、`/v1/images/generations` 要求管理员创建的有效
+个人或项目 Key。模型名称使用聚合模型对外名称或已授权的接入模型编码；
+管理员 JWT 不可代替业务 Key。聊天接口支持 `llm`/`vlm`，其中 OpenAI
+兼容协议支持文本与多模态请求，Claude/Gemini 仅支持文本聊天。聊天
+`stream: true` 返回 OpenAI 风格 SSE，支持 OpenAI、Claude、Gemini
+文本协议；Embeddings/Rerank/OCR/图像生成目前只支持 OpenAI 兼容路径的
+非流式 JSON 转发，需供应商实际提供相应路径和响应格式。
+
+## 4.1.1 Key 级限额与排队（已实现）
+
+- QPS 按 UTC 自然秒、TPM 按 UTC 自然分钟计数；输入 Token 基于请求体估算，
+  与 `max_tokens` 一起预留，调用成功后按上游 `usage.total_tokens` 调整。
+- 对聊天与 Embeddings，成功响应缺少有效 Token usage 时返回 502，按预留量
+  计费；对 Rerank/OCR/图像生成，如果供应商未返回 Token usage，则按请求估算
+  量记录并用 `X-Gateway-Usage-Estimated: true` 标记。这是 Token 额度的估算，
+  不是图片/页数或供应商费用计量。
+- 周额度从 UTC 周一零点重置，月额度从 UTC 每月 1 日零点重置。
+  上游用量若超过预留量，该次请求仍会计入并可能使余额为负，后续请求会被拒绝。
+- 配置 `block` 时，速率受限请求等待最多 `max_wait_ms`，超时返回 HTTP 429；
+  周/月额度不足或单次预留量超过 TPM 时直接返回 429。
+- 配置 `queue` 时，受限请求返回 HTTP 202：
+
+```json
+{
+  "ticket": "32-character-hex-ticket",
+  "position": 1,
+  "status": "waiting",
+  "poll_url": "/v1/queue/<ticket>",
+  "retry_after_ms": 1000
+}
+```
+
+用**同一 Key** 请求 `GET /v1/queue/<ticket>` 可获取当前排队位置，票据失效
+或消费后返回 404。客户端须使用原 Key、原请求体和
+`X-Queue-Ticket: <ticket>` 重发原 POST；位置查询不会自动执行调用。
+重试时仍未满足限额会再次收到 HTTP 202，同一个票据最长有效 `max_wait_ms`；
+超过时间后需重新排队。Redis 故障时网关返回 503，不会无治理地转发请求。
+周期配额的运行计数存储在 Redis；生产部署须开启持久化并禁止计数 Key 被驱逐，
+否则 Redis 丢失数据后计数会从零开始。请求日志和实际用量另写入 PostgreSQL。
+
 ## 4.2 通用请求头
 
 建议支持：
@@ -90,9 +134,9 @@ x-api-key: <api_key>
 
 ## 5.1 `GET /models`
 
-查询当前 Key 可访问的对外聚合模型列表。
+查询当前 Key 可访问的对外聚合模型与已授权的直连接入模型列表。
 
-这里返回的不是供应商原始模型，而是平台对外服务的统一模型名称。
+返回聚合模型的对外名称或直连接入模型的内部接入编码，不返回供应商原始模型名。
 
 建议返回：
 
@@ -330,6 +374,12 @@ x-api-key: <api_key>
 ## 13.1 SSE
 
 建议 `chat/completions` 和 `responses` 支持 SSE。
+
+目前只实现 `/chat/completions` 的 SSE；对 OpenAI 上游要求
+`stream_options.include_usage=true`，Claude/Gemini 文本事件统一转换为
+OpenAI 风格的增量 `data:` 帧。完整结束后写入 usage，再返回 `[DONE]`；
+流中断时发送 `event: gateway_error`，按预留量保守计费。`/responses`
+仍是设计预留，尚无对应网关接口。Claude/Gemini 多模态事件目前不支持。
 
 响应头：
 

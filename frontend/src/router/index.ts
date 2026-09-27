@@ -5,8 +5,31 @@ import AdminLayout from "@/layouts/AdminLayout.vue";
 import { getAccessToken } from "@/utils/auth";
 import DashboardView from "@/views/DashboardView.vue";
 import LoginView from "@/views/LoginView.vue";
-import ResourceTableView from "@/views/ResourceTableView.vue";
+import IdentityView from "@/views/IdentityView.vue";
+import ModelCatalogView from "@/views/ModelCatalogView.vue";
+import RoutingStrategiesView from "@/views/RoutingStrategiesView.vue";
+import AggregateModelView from "@/views/AggregateModelView.vue";
+import ProviderView from "@/views/ProviderView.vue";
+import PlaygroundView from "@/views/PlaygroundView.vue";
+import CredentialView from "@/views/CredentialView.vue";
+
+import { navigation } from "./navigation";
+
 const placeholder = () => import("@/views/PagePlaceholder.vue");
+const plannedRoutes: RouteRecordRaw[] = navigation.flatMap((group) =>
+  group.items
+    .filter((item) => item.planned)
+    .map((item) => ({
+      path: item.path,
+      component: placeholder,
+      meta: {
+        title: item.label,
+        section: group.label,
+        description: item.description,
+        planned: true,
+      },
+    })),
+);
 
 const routes: RouteRecordRaw[] = [
   {
@@ -33,8 +56,18 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        path: "/users",
+        component: IdentityView,
+        meta: { title: "用户管理", section: "用户与权限" },
+      },
+      {
+        path: "/user-groups",
+        component: IdentityView,
+        meta: { title: "用户组", section: "用户与权限" },
+      },
+      {
         path: "/organizations",
-        component: ResourceTableView,
+        component: IdentityView,
         meta: {
           title: "组织管理",
           section: "用户与权限",
@@ -43,7 +76,7 @@ const routes: RouteRecordRaw[] = [
       },
       {
         path: "/projects",
-        component: ResourceTableView,
+        component: IdentityView,
         meta: {
           title: "项目管理",
           section: "用户与权限",
@@ -52,67 +85,57 @@ const routes: RouteRecordRaw[] = [
       },
       {
         path: "/credentials",
-        component: ResourceTableView,
+        component: CredentialView,
         meta: {
-          title: "凭证管理",
+          title: "项目 Key",
           section: "凭证中心",
-          description: "统一承接个人 Key、项目 Key、轮换和状态控制。",
+          description: "管理项目凭证、模型授权和用量配置。",
         },
       },
       {
+        path: "/credentials/personal",
+        component: CredentialView,
+        meta: { title: "个人 Key", section: "凭证中心", description: "管理个人凭证与模型授权。" },
+      },
+      {
         path: "/providers",
-        component: ResourceTableView,
+        component: ProviderView,
         meta: {
           title: "供应商管理",
-          section: "模型管理",
+          section: "模型治理",
           description: "管理接入源配置、认证方式、健康状态和基础地址。",
         },
       },
       {
         path: "/models",
-        component: ResourceTableView,
+        component: ModelCatalogView,
         meta: {
-          title: "模型治理",
-          section: "模型管理",
-          description: "管理接入模型、聚合模型、模型能力分类和发布策略。",
+          title: "模型管理",
+          section: "模型治理",
+          description: "管理不同供应商的接入模型和上游连接。",
         },
       },
       {
         path: "/nodes",
-        component: ResourceTableView,
-        meta: {
-          title: "节点管理",
-          section: "模型管理",
-          description: "管理节点权重、优先级、并发、Token 和健康检查配置。",
-        },
+        redirect: "/models",
+        meta: { hidden: true },
       },
       {
         path: "/routing",
-        component: placeholder,
-        meta: {
-          title: "路由策略",
-          section: "模型管理",
-          description: "管理项目级模型策略、调度规则、灰度和 fallback。",
-        },
+        component: RoutingStrategiesView,
+        meta: { title: "路由策略", section: "模型治理", description: "查看平台内置的固定路由策略。" },
       },
       {
-        path: "/logs",
-        component: placeholder,
-        meta: {
-          title: "日志中心",
-          section: "审计分析",
-          description: "查询调用日志、审计日志和安全事件。",
-        },
+        path: "/models/aggregated",
+        component: AggregateModelView,
+        meta: { title: "聚合模型", section: "模型治理", description: "为对外模型选择路由策略和候选接入模型。" },
       },
       {
-        path: "/settings",
-        component: placeholder,
-        meta: {
-          title: "系统设置",
-          section: "平台配置",
-          description: "承接环境配置、全局规则、告警通道和系统级开关。",
-        },
+        path: "/playground",
+        component: PlaygroundView,
+        meta: { title: "在线调试", section: "模型治理", description: "调试模型对话及生成参数。" },
       },
+      ...plannedRoutes,
     ],
   },
 ];

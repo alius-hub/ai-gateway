@@ -190,7 +190,7 @@
 
 ### `POST /user-groups`
 
-创建自定义用户组。
+创建独立于组织的自定义用户组，不需要 `organization_id`，也不通过用户组赋予组织角色。当前仅平台管理员可创建和管理组成员。
 
 ### `GET /user-groups/{group_id}`
 
@@ -264,11 +264,16 @@
 
 请求体建议包含：
 
-- `organization_id`
 - `name`
 - `code`
 - `environment`
 - `description`
+- `owner_user_id`（可选；默认创建者）
+- `organization_id`（可选；不传或传 `null` 创建平台级项目，仅平台管理员可创建；传有效组织 ID 则创建组织级项目）
+
+平台级项目不继承组织权限：负责人和启用的项目成员可查看，负责人和项目管理员可维护；新增成员无需先加入组织。组织级项目继续校验组织权限及负责人、成员的组织成员资格。`GET /projects?scope=platform` 仅查询平台级项目；`organization_id` 和 `scope=platform` 不可同时传入。项目创建后不能修改 `organization_id`。
+
+当前凭证、调用日志和用量等下游数据仍要求组织 ID；平台级项目在此阶段仅支持项目及成员管理，不代表已支持无组织项目的完整网关调用链路。
 
 ### `GET /projects/{project_id}`
 
@@ -385,12 +390,19 @@
 权限建议：
 
 - 仅管理员可创建
+- 可选 `custom_prefix`：2-20 位、字母开头，仅含字母/数字/`_`/`-`；留空使用 `agw_`。未以 `_` 结尾时生成 Key 自动加 `_` 分隔。
 
 ### `GET /credentials/user-keys/{key_id}`
 
 查询个人 Key 详情。
 
-### `PATCH /credentials/user-keys/{key_id}`
+### `GET /credentials/user-keys/{key_id}/secret`
+
+仅平台管理员可再次查看已加密保存的 Key 明文及其授权模型选项，响应带
+`Cache-Control: no-store`。旧 Key 仅存哈希时返回 409，需手动轮换。
+常规列表、详情及编辑接口不返回明文或密文。
+
+### `PUT /credentials/user-keys/{key_id}`
 
 更新个人 Key 配置。
 
@@ -401,6 +413,7 @@
 权限建议：
 
 - 仅管理员可操作
+- 不传请求体时保留现有前缀；传 `{"custom_prefix": "team"}` 修改前缀，传 `{"custom_prefix": null}` 恢复默认前缀。变更前缀会使旧 Key 立即失效。
 
 ### `PATCH /credentials/user-keys/{key_id}/status`
 
@@ -425,12 +438,17 @@
 权限建议：
 
 - 仅管理员可创建
+- `custom_prefix` 的规则同个人 Key。
 
 ### `GET /credentials/project-keys/{key_id}`
 
 查询项目 Key 详情。
 
-### `PATCH /credentials/project-keys/{key_id}`
+### `GET /credentials/project-keys/{key_id}/secret`
+
+同个人 Key 的管理员查看规则；仅允许读取当前作用域内的 Key。
+
+### `PUT /credentials/project-keys/{key_id}`
 
 更新项目 Key 配置。
 
@@ -441,6 +459,7 @@
 权限建议：
 
 - 仅管理员可操作
+- 可选 `custom_prefix`，规则同个人 Key。
 
 ### `PATCH /credentials/project-keys/{key_id}/status`
 

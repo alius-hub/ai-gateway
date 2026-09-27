@@ -128,7 +128,7 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | id | bigint | 主键 |
-| organization_id | bigint | 所属组织 |
+| organization_id | bigint | 所属组织，可空；空表示平台级项目 |
 | name | varchar(128) | 项目名称 |
 | code | varchar(64) | 项目标识，同组织下唯一 |
 | environment | varchar(32) | 环境，如 `dev`、`test`、`prod` |
@@ -141,7 +141,8 @@
 
 约束建议：
 
-- `(organization_id, code)` 唯一索引
+- 平台级项目仅通过项目成员关系控制访问，不继承组织权限。
+- 凭证、请求日志和用量记录目前仍要求组织 ID；这些链路接入平台级项目时需单独完善。
 - `organization_id` 外键
 - `owner_user_id` 外键
 
@@ -169,7 +170,7 @@
 
 API Key 表，用于网关调用鉴权。
 
-注意：明文 Key 不应直接落库，建议仅保存哈希值和前缀。
+注意：明文 Key 不直接落库；哈希用于网关鉴权，新建/轮换后另存 Fernet 密文供平台管理员查看。历史哈希不可逆，不能自动补齐密文。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -180,7 +181,9 @@ API Key 表，用于网关调用鉴权。
 | scope_type | varchar(32) | 作用域类型：`project`、`user` |
 | name | varchar(128) | Key 名称 |
 | key_prefix | varchar(32) | 展示前缀 |
+| custom_prefix | varchar(20) | 创建时输入的自定义前缀，可空；为空时使用 `agw_` |
 | key_hash | varchar(255) | Key 哈希 |
+| key_ciphertext | text | 加密的 Key 明文，可空；历史 Key 轮换前为空 |
 | status | smallint | 状态：1 启用，0 禁用 |
 | expires_at | timestamptz | 过期时间，可空 |
 | last_used_at | timestamptz | 最后使用时间，可空 |
@@ -205,6 +208,8 @@ API Key 表，用于网关调用鉴权。
 - 当 `scope_type = user` 时，表示个人 Key
 - 个人 Key 仍建议落在组织边界内，避免越权访问其他组织资源
 - 一期建议所有 Key 的创建、轮换、启用、禁用都由管理员执行
+- 密文使用服务端 `AI_GATEWAY_PROVIDER_ENCRYPTION_KEY` 加密；查看接口仅限平台管理员且响应不缓存，加密密钥丢失后无法恢复已存 Key
+- 自定义前缀是 Key 明文的一部分；旧 Key 保持原样，修改已有 Key 前缀需要轮换，网关按完整密钥哈希鉴权
 - 普通用户仅允许查看自己有权限访问的 Key 信息，不开放创建权限
 
 ## 4.7 providers
@@ -413,12 +418,11 @@ API Key 表，用于网关调用鉴权。
 
 ## 4.9.3 user_groups
 
-自定义用户组表，用于把一批用户组织成授权对象。
+自定义用户组表，用于把一批用户组织成授权对象。用户组独立于组织，成员身份不授予组织角色；组织角色由 `organization_members` 单独管理。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | id | bigint | 主键 |
-| organization_id | bigint | 所属组织 |
 | group_name | varchar(128) | 用户组名称 |
 | group_code | varchar(64) | 用户组编码 |
 | description | varchar(255) | 描述，可空 |
@@ -429,7 +433,7 @@ API Key 表，用于网关调用鉴权。
 
 约束建议：
 
-- `(organization_id, group_code)` 唯一索引
+- 历史记录可能在不同组织下使用相同 `group_code`，因此 `id` 是唯一的用户组标识；创建时不再需要组织。
 
 ## 4.9.4 user_group_members
 

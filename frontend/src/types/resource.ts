@@ -28,20 +28,31 @@ export interface CredentialItem {
 
 export interface ProviderItem {
   id: number;
+  organization_id?: number | null;
   name: string;
   code: string;
   provider_type: string;
   base_url?: string;
   status: number;
   health_status: string;
+  secret_count?: number;
+  protocol_count?: number;
 }
 
 export interface AccessModelItem {
   id: number;
   provider_id: number;
+  protocol_id: number | null;
+  secret_id: number | null;
   access_model_code: string;
   provider_model_name: string;
   model_type: string;
+  base_url: string | null;
+  effective_base_url: string | null;
+  region: string | null;
+  max_concurrency: number | null;
+  context_window: number | null;
+  timeout_ms: number | null;
   status: number;
   currency?: string;
 }
@@ -54,18 +65,4 @@ export interface AggregateModelItem {
   default_routing_strategy: string;
   status: number;
   description?: string | null;
-}
-
-export interface NodeItem {
-  id: number;
-  node_code: string;
-  node_name: string;
-  provider_id: number;
-  provider_model_id: number;
-  model_type: string;
-  status: number;
-  health_status: string;
-  weight: number;
-  priority: number;
-  region?: string | null;
 }
