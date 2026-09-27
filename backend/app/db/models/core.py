@@ -345,3 +345,10 @@ class PlaygroundRecord(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     truncated: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC), index=True)
+
+
+class GatewayLogSettings(Base):
+    __tablename__ = "gateway_log_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    image_mode: Mapped[str] = mapped_column(String(24), default="content_only")

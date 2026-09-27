@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import codecs
 import json
+import re
 from dataclasses import dataclass
+from typing import Callable
 
 import httpx
 
@@ -18,19 +21,31 @@ class StreamUsage:
     seen: bool = False
 
 
-async def events(response: httpx.Response):
+async def events(response: httpx.Response, archive: Callable[[bytes], None] | None = None):
     data: list[str] = []
     event = ""
-    size = 0
-    async for line in response.aiter_lines():
-        size += len(line.encode())
-        if size > 1_048_576:
-            raise ValueError("oversized SSE event")
-        if not line:
-            if data:
-                yield event, "\n".join(data)
-            data, event, size = [], "", 0
-        elif line.startswith("data:"):
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    pending = ""
+    async for raw in response.aiter_bytes():
+        if archive:
+            archive(raw)
+        pending += decoder.decode(raw)
+        while match := re.search(r"\r\n|\r|\n", pending):
+            if match.group() == "\r" and match.end() == len(pending):
+                break
+            line, pending = pending[:match.start()], pending[match.end():]
+            if not line:
+                if data:
+                    yield event, "\n".join(data)
+                data, event = [], ""
+            elif line.startswith("data:"):
+                data.append(line[5:].lstrip(" "))
+            elif line.startswith("event:"):
+                event = line[6:].strip()
+    pending += decoder.decode(b"", final=True)
+    if pending:
+        line = pending.rstrip("\r")
+        if line.startswith("data:"):
             data.append(line[5:].lstrip(" "))
         elif line.startswith("event:"):
             event = line[6:].strip()

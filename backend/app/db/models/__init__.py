@@ -1,7 +1,8 @@
 from app.db.models.core import (
-    AggregateModelNodeBinding,
     AggregatedModel,
+    AggregateModelNodeBinding,
     ApiKey,
+    GatewayLogSettings,
     ModelNode,
     Organization,
     OrganizationMember,
@@ -25,6 +26,7 @@ __all__ = [
     "AggregateModelNodeBinding",
     "AggregatedModel",
     "ApiKey",
+    "GatewayLogSettings",
     "ModelNode",
     "Organization",
     "OrganizationMember",

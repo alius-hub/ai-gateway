@@ -1,12 +1,14 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 
 from app.api.admin.router import admin_router
 from app.api.gateway.router import gateway_router
 from app.core.config import get_settings
+from app.modules.gateway.archive import CallArchiveMiddleware, archive_worker
 from app.schemas.common import HealthCheckResponse
 
 settings = get_settings()
@@ -14,7 +16,14 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    yield
+    worker = asyncio.create_task(archive_worker()) if settings.log_archive_enabled else None
+    try:
+        yield
+    finally:
+        if worker:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
 
 
 def create_application() -> FastAPI:
@@ -33,6 +42,7 @@ def create_application() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(CallArchiveMiddleware)
 
     @app.get("/health", tags=["System"], response_model=HealthCheckResponse)
     async def health_check() -> HealthCheckResponse:

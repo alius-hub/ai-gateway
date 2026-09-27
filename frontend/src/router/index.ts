@@ -12,6 +12,8 @@ import AggregateModelView from "@/views/AggregateModelView.vue";
 import ProviderView from "@/views/ProviderView.vue";
 import PlaygroundView from "@/views/PlaygroundView.vue";
 import CredentialView from "@/views/CredentialView.vue";
+import CallLogsView from "@/views/CallLogsView.vue";
+import PlatformSettingsView from "@/views/PlatformSettingsView.vue";
 
 import { navigation } from "./navigation";
 
@@ -134,6 +136,16 @@ const routes: RouteRecordRaw[] = [
         path: "/playground",
         component: PlaygroundView,
         meta: { title: "在线调试", section: "模型治理", description: "调试模型对话及生成参数。" },
+      },
+      {
+        path: "/logs",
+        component: CallLogsView,
+        meta: { title: "调用日志", section: "日志中心", description: "查询请求、用量和原始归档。" },
+      },
+      {
+        path: "/settings",
+        component: PlatformSettingsView,
+        meta: { title: "平台设置", section: "系统设置", description: "配置日志图片归档策略。" },
       },
       ...plannedRoutes,
     ],

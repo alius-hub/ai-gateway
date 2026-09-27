@@ -540,3 +540,42 @@ Connection: keep-alive
 - 告警、分析和审计查询
 
 这条边界要尽量保持清晰，避免把后台配置接口混入网关运行时入口。
+
+## 19. 原始调用归档（可选）
+
+开启 `AI_GATEWAY_LOG_ARCHIVE_ENABLED=true` 后，网关将客户端原始请求头与请求体、
+上游请求头与请求体、上游原始响应头与响应体（流式为 SSE 字节）、
+客户端最终响应头与响应体记录到本地待上传目录。base64 图片直接保存在原始字节中；
+系统设置中的全局策略默认 `content_only`，仅保留原始内容和图片 URL。
+平台管理员切换到 `mirror_images` 后，后台尝试抓取外链图片本体并转存 RustFS；
+可选用 `AI_GATEWAY_LOG_ARCHIVE_IMAGE_HOSTS` 限制来源域名，空数组表示不额外限制
+（但拒绝 localhost、环回及链路本地 IP）。抓取失败会标记在 manifest 中。
+归档以 `X-Gateway-Request-Id` 关联 PostgreSQL 调用明细。
+鉴权失败、排队和限额拒绝也会产生原始归档；后台上传完成后补写最小
+`request_logs` 元数据（模型显示为未路由），在管理端列表中可查询。
+
+部署前在 `backend/.env.dev` 等环境文件或环境变量中配置：
+
+```text
+AI_GATEWAY_LOG_ARCHIVE_ENABLED=true
+AI_GATEWAY_LOG_ARCHIVE_ENDPOINT=http://<RustFS-S3-API-地址>:<API-端口>
+AI_GATEWAY_LOG_ARCHIVE_BUCKET=<预先建立的私有存储桶>
+AI_GATEWAY_LOG_ARCHIVE_ACCESS_KEY=<Access-Key>
+AI_GATEWAY_LOG_ARCHIVE_SECRET_KEY=<Secret-Key>
+AI_GATEWAY_LOG_ARCHIVE_SPOOL_DIR=<持久化磁盘目录>
+AI_GATEWAY_LOG_ARCHIVE_IMAGE_HOSTS=["images.example.internal"]
+```
+
+RustFS 的 `:9001/rustfs/console/...` 是控制台地址，不能用作 S3 API endpoint；
+API 端口以实际部署配置为准。存储桶需要预先创建，归档 Key 格式为
+`gateway-calls/YYYY/MM/DD/req_.../{request.bin,upstream_request.bin,upstream_response.bin,response.bin,manifest.json}`。
+`manifest.json` 最后上传，表示本批对象已归档。失败时本地文件保留并在服务运行期间重试。
+管理端 `/api/admin/v1/logs/requests` 仅平台管理员可查询；详情提供 60 秒有效的对象下载链接。
+设置接口为 `/api/admin/v1/settings/log-archive`，需先执行 `uv run alembic upgrade head`
+创建 `gateway_log_settings`；策略在后台处理待上传文件时读取，因此切换设置可能影响尚未处理的请求。
+
+**可靠性边界：** 原始内容包含 Authorization、图片和提示词，存储桶与待上传目录必须限制访问并加密备份。
+本地磁盘写入发生在转发链路上，RustFS 上传异步进行；若磁盘故障、进程被强制终止、
+本地待上传目录丢失，或外链图片地址已失效，不能保证原始记录完整。
+不为归档设置应用层大小上限，但上游/ASGI/内存/磁盘/对象存储仍有实际资源约束。
+需要保证进程故障下的零丢失时，必须另行引入可靠队列与持久化消息确认策略。

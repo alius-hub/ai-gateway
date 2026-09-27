@@ -200,7 +200,9 @@ def record(db: Session, request: Request, key: ApiKey, model: ProviderModel,
            aggregate: AggregatedModel | None, status: int, latency: int, tokens: int,
            input_tokens: int | None, output_tokens: int | None, error_code: str | None) -> None:
     log = RequestLog(
-        request_id=f"req_{uuid4().hex}", organization_id=key.organization_id,
+        request_id=(request.scope["call_archive"].request_id
+                    if "call_archive" in request.scope else f"req_{uuid4().hex}"),
+        organization_id=key.organization_id,
         project_id=key.project_id, api_key_id=key.id,
         aggregate_model_id=aggregate.id if aggregate else None,
         provider_id=model.provider_id, provider_model_id=model.id,
@@ -221,6 +223,7 @@ def record(db: Session, request: Request, key: ApiKey, model: ProviderModel,
             output_tokens=output_tokens, total_tokens=tokens,
         ))
     db.commit()
+    request.scope["db_recorded"] = True
 
 
 @gateway_router.get("/models")
@@ -265,9 +268,15 @@ async def stream_response(
     started = perf_counter()
     client = httpx.AsyncClient(timeout=timeout, trust_env=False)
     try:
-        upstream = await client.send(client.build_request(
+        upstream_request = client.build_request(
             "POST", url, headers=headers, json=upstream_body,
-        ), stream=True)
+        )
+        archive = request.scope.get("call_archive")
+        if archive:
+            archive.upstream(upstream_request)
+        upstream = await client.send(upstream_request, stream=True)
+        if archive:
+            archive.upstream_response(upstream)
     except (httpx.RequestError, httpx.TimeoutException) as exc:
         await client.aclose()
         await service.settle(reservation, 0)
@@ -304,12 +313,13 @@ async def stream_response(
         usage = StreamUsage()
         status, code = 200, None
         try:
-            async for event, data in events(upstream):
+            async for event, data in events(
+                upstream, archive=lambda data: archive.write("upstream_response.bin", data)
+                if archive else None,
+            ):
                 fragment = translate(protocol, event, data, public_name, usage)
                 if fragment:
                     yield fragment
-                if usage.completed:
-                    break
             if not usage.completed:
                 status, code = 502, "provider_stream_interrupted"
                 yield b'event: gateway_error\ndata: {"code":"provider_stream_interrupted"}\n\n'
@@ -347,8 +357,6 @@ async def stream_response(
 
 async def forward(request: Request, body: dict, kind: str, db: Session, key: ApiKey,
                   ticket: str | None) -> Response:
-    if len(json.dumps(body).encode()) > 262144:
-        return error(413, "request_too_large", "Request body exceeds 256 KB.")
     model, aggregate = authorized_models(db, key, body["model"], MODEL_TYPES[kind])
     cost = token_estimate(body, kind)
     digest = fingerprint(body)
@@ -399,7 +407,16 @@ async def forward(request: Request, body: dict, kind: str, db: Session, key: Api
         status, payload, code, estimated, received_success = 502, None, None, False, False
         try:
             async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
-                response = await client.post(url, headers=headers, json=upstream_body)
+                upstream_request = client.build_request(
+                    "POST", url, headers=headers, json=upstream_body,
+                )
+                archive = request.scope.get("call_archive")
+                if archive:
+                    archive.upstream(upstream_request)
+                response = await client.send(upstream_request)
+                if archive:
+                    archive.upstream_response(response)
+                    archive.write("upstream_response.bin", response.content)
             if response.status_code >= 400 or response.is_redirect:
                 code = "provider_error"
             else:

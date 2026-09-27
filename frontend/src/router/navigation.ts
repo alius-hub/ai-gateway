@@ -81,7 +81,7 @@ export const navigation: NavigationGroup[] = [
     id: "logs",
     label: "日志中心",
     items: [
-      { label: "调用日志", path: "/logs", planned: true, description: "查询网关调用、响应及用量记录。" },
+      { label: "调用日志", path: "/logs", description: "查询网关调用、响应及用量记录。" },
       { label: "审计日志", path: "/logs/audit", planned: true, description: "追踪平台配置和管理操作。" },
       { label: "安全日志", path: "/logs/security", planned: true, description: "查询安全策略命中和拦截事件。" },
     ],
@@ -103,6 +103,6 @@ export const navigation: NavigationGroup[] = [
   {
     id: "settings",
     label: "系统设置",
-    items: [{ label: "平台设置", path: "/settings", planned: true, description: "配置平台全局规则和环境参数。" }],
+    items: [{ label: "平台设置", path: "/settings", description: "配置平台全局规则和日志归档策略。" }],
   },
 ];

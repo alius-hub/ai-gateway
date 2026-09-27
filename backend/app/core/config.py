@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://:Dev2026!@localhost:6379/0")
     jwt_secret_key: str = Field(default="change-me-in-production")
     provider_encryption_key: str = Field(default="")
+    log_archive_enabled: bool = Field(default=False)
+    log_archive_spool_dir: str = Field(default="./data/call-archives")
+    log_archive_endpoint: str = Field(default="")
+    log_archive_bucket: str = Field(default="")
+    log_archive_access_key: str = Field(default="")
+    log_archive_secret_key: str = Field(default="")
+    log_archive_region: str = Field(default="us-east-1")
+    log_archive_prefix: str = Field(default="gateway-calls")
+    log_archive_image_hosts: list[str] = Field(default_factory=list)
     access_token_expire_minutes: int = Field(default=120)
     allowed_origins: list[str] = Field(
         default_factory=lambda: [

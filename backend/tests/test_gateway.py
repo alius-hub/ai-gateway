@@ -1,9 +1,13 @@
 import asyncio
 import hashlib
+import io
+import json
+import tempfile
 import time
 import unittest
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
 import httpx
@@ -17,10 +21,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.api.gateway.router import ImageBody, stream_response, token_estimate
+from app.core.config import get_settings
 from app.db.base import Base
 from app.db.models import (
     AggregatedModel,
     ApiKey,
+    GatewayLogSettings,
     Organization,
     Project,
     Provider,
@@ -32,7 +38,9 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.main import app
+from app.modules.gateway.archive import CallArchive, _upload
 from app.modules.gateway.limits import Limiter, period
+from app.modules.identity.router import actor
 
 
 @compiles(BigInteger, "sqlite")
@@ -54,6 +62,7 @@ class GatewayTest(unittest.TestCase):
             User.__table__, Organization.__table__, Project.__table__, Provider.__table__,
             ProviderProtocol.__table__, ProviderModel.__table__, AggregatedModel.__table__,
             ApiKey.__table__, RequestLog.__table__, UsageRecord.__table__,
+            GatewayLogSettings.__table__,
         ])
         self.db = Session(self.engine)
         self.raw = "agw_" + "a" * 40
@@ -116,6 +125,13 @@ class GatewayTest(unittest.TestCase):
             side_effect=lambda **kw: original(transport=httpx.MockTransport(upstream), **kw),
         )
         self.http_patch.start()
+        disabled = get_settings().model_copy(update={"log_archive_enabled": False})
+        self.archive_patch = patch("app.modules.gateway.archive.get_settings",
+                                   return_value=disabled)
+        self.audit_patch = patch("app.modules.audit.router.get_settings",
+                                 return_value=disabled)
+        self.archive_patch.start()
+        self.audit_patch.start()
         app.dependency_overrides[get_db] = lambda: self.db
         self.client = TestClient(app)
         self.headers = {"Authorization": f"Bearer {self.raw}"}
@@ -123,6 +139,8 @@ class GatewayTest(unittest.TestCase):
                      "max_tokens": 4}
 
     def tearDown(self):
+        self.audit_patch.stop()
+        self.archive_patch.stop()
         self.http_patch.stop()
         self.limiter_patch.stop()
         app.dependency_overrides.clear()
@@ -180,6 +198,162 @@ class GatewayTest(unittest.TestCase):
         self.db.get(ApiKey, 1).status = 0
         self.db.commit()
         self.assertEqual(self.client.get("/v1/models", headers=self.headers).status_code, 401)
+
+    def test_raw_archive_preserves_headers_images_and_both_streams(self):
+        key = self.db.get(ApiKey, 1)
+        key.qps_limit = None
+        self.db.commit()
+        self.reply = lambda _request: httpx.Response(
+            200, headers={"content-type": "text/event-stream"},
+            content=b'data: {"choices":[{"delta":{"content":"raw"}}]}\r\n\r\n'
+                    b'data: {"choices":[],"usage":{"prompt_tokens":1,'
+                    b'"completion_tokens":2,"total_tokens":3}}\n\n'
+                    b'data: [DONE]\n\n',
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            settings = get_settings().model_copy(update={
+                "log_archive_enabled": True, "log_archive_spool_dir": folder,
+            })
+            with patch("app.modules.gateway.archive.get_settings", return_value=settings):
+                body = json.dumps({
+                    **self.body, "stream": True,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "image_url", "image_url": {
+                            "url": "data:image/png;base64,AQIDBA==",
+                        }},
+                    ]}],
+                }).encode()
+                response = self.client.post(
+                    "/v1/chat/completions", content=body,
+                    headers={**self.headers, "content-type": "application/json",
+                             "x-custom-original": "preserve"},
+                )
+                self.assertEqual(response.status_code, 200)
+                request_id = response.headers["x-gateway-request-id"]
+                self.assertEqual(self.db.query(RequestLog).one().request_id, request_id)
+                manifest_file = next(Path(folder).rglob("manifest.pending"))
+                directory = manifest_file.parent
+                manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+                self.assertEqual((directory / "request.bin").read_bytes(), body)
+                self.assertIn(["x-custom-original", "preserve"], manifest["request_headers"])
+                self.assertIn(b"base64,AQIDBA==", (directory / "upstream_request.bin").read_bytes())
+                self.assertIn(b"\r\n\r\n", (directory / "upstream_response.bin").read_bytes())
+                self.assertIn(b"data: [DONE]\n\n", (directory / "response.bin").read_bytes())
+                self.assertTrue(manifest["capture_complete"])
+                settings.log_archive_bucket = "test"
+                settings.log_archive_prefix = "calls"
+                client = MagicMock()
+                with patch("boto3.client", return_value=client), \
+                     patch("app.modules.gateway.archive.SessionLocal",
+                           side_effect=lambda: Session(self.engine)):
+                    _upload(directory, Path(folder))
+                self.assertFalse(directory.exists())
+                self.assertEqual(client.upload_file.call_count, 4)
+                self.assertEqual(client.put_object.call_args.kwargs["Key"],
+                                 f"calls/{manifest_file.parent.relative_to(folder).as_posix()}/"
+                                 "manifest.json")
+
+    def test_call_log_list_and_detail_require_platform_admin(self):
+        self.assertEqual(self.client.post("/v1/chat/completions", json=self.body,
+                                          headers=self.headers).status_code, 200)
+        request_id = self.db.query(RequestLog).one().request_id
+        self.assertEqual(self.client.get("/api/admin/v1/logs/requests").status_code, 401)
+        app.dependency_overrides[actor] = lambda: self.db.get(User, 1)
+        self.assertEqual(self.client.get("/api/admin/v1/logs/requests").status_code, 403)
+        self.db.get(User, 1).is_platform_admin = True
+        self.db.commit()
+        listing = self.client.get("/api/admin/v1/logs/requests").json()["data"]
+        self.assertEqual(listing["total"], 1)
+        self.assertEqual(listing["items"][0]["request_id"], request_id)
+        detail = self.client.get(f"/api/admin/v1/logs/requests/{request_id}").json()["data"]
+        self.assertEqual(detail["total_tokens"], 5)
+        self.assertIsNone(detail["archive"])
+        settings = get_settings().model_copy(update={
+            "log_archive_enabled": True, "log_archive_bucket": "call-logs",
+        })
+        client = MagicMock()
+        client.get_object.return_value = {
+            "Body": io.BytesIO(json.dumps({
+                "files": ["request.bin"], "capture_complete": True,
+            }).encode()),
+        }
+        client.generate_presigned_url.return_value = "http://storage/private"
+        with patch("app.modules.audit.router.get_settings", return_value=settings), \
+             patch("app.modules.audit.router.s3_client", return_value=client):
+            archive = self.client.get(f"/api/admin/v1/logs/requests/{request_id}").json()
+        self.assertEqual(archive["data"]["archive"]["downloads"]["request.bin"],
+                         "http://storage/private")
+
+    def test_rejected_request_is_archived_and_indexed_in_background(self):
+        with tempfile.TemporaryDirectory() as folder:
+            settings = get_settings().model_copy(update={
+                "log_archive_enabled": True, "log_archive_spool_dir": folder,
+                "log_archive_bucket": "test", "log_archive_prefix": "calls",
+            })
+            with patch("app.modules.gateway.archive.get_settings", return_value=settings):
+                response = self.client.post("/v1/chat/completions", json=self.body,
+                                            headers={"Authorization": "Bearer invalid"})
+                self.assertEqual(response.status_code, 401)
+                pending = next(Path(folder).rglob("manifest.pending"))
+                directory = pending.parent
+                manifest = json.loads(pending.read_text(encoding="utf-8"))
+                self.assertIn(["authorization", "Bearer invalid"],
+                              [[key.lower(), value] for key, value in manifest["request_headers"]])
+                client = MagicMock()
+                with patch("boto3.client", return_value=client), \
+                     patch("app.modules.gateway.archive.SessionLocal",
+                           side_effect=lambda: Session(self.engine)):
+                    _upload(directory, Path(folder))
+            self.db.expire_all()
+            log = self.db.query(RequestLog).one()
+            self.assertEqual(log.request_id, response.headers["x-gateway-request-id"])
+            self.assertEqual(log.http_status, 401)
+
+    def test_global_image_policy_and_remote_image_archival(self):
+        self.assertEqual(self.client.get("/api/admin/v1/settings/log-archive").status_code, 401)
+        app.dependency_overrides[actor] = lambda: self.db.get(User, 1)
+        self.assertEqual(self.client.get("/api/admin/v1/settings/log-archive").status_code, 403)
+        self.db.get(User, 1).is_platform_admin = True
+        self.db.commit()
+        path = "/api/admin/v1/settings/log-archive"
+        self.assertEqual(self.client.get(path).json()["data"]["image_mode"], "content_only")
+        self.assertEqual(self.client.put(path, json={"image_mode": "all"}).status_code, 422)
+        self.assertEqual(self.client.put(
+            path, json={"image_mode": "mirror_images"},
+        ).json()["data"]["image_mode"], "mirror_images")
+        self.assertEqual(self.client.get(path).json()["data"]["image_mode"], "mirror_images")
+
+        with tempfile.TemporaryDirectory() as folder:
+            settings = get_settings().model_copy(update={
+                "log_archive_spool_dir": folder, "log_archive_bucket": "test",
+                "log_archive_prefix": "calls",
+            })
+            archive = CallArchive({
+                "method": "POST", "path": "/v1/images/generations",
+                "headers": [], "client": ("127.0.0.1", 4000),
+            }, Path(folder))
+            archive.write("upstream_response.bin", json.dumps({
+                "data": [{"url": "https://images.example.com/result.png"}],
+            }).encode())
+            archive.manifest["db_recorded"] = True
+            archive.finish()
+            client = MagicMock()
+            image = MagicMock()
+            image.iter_bytes.return_value = [b"\x89PNG", b"content"]
+            http = MagicMock()
+            http.stream.return_value.__enter__.return_value = image
+            with patch("app.modules.gateway.archive.get_settings", return_value=settings), \
+                 patch("app.modules.gateway.archive.s3_client", return_value=client), \
+                 patch("app.modules.gateway.archive.SessionLocal",
+                       side_effect=lambda: Session(self.engine)), \
+                 patch("app.modules.gateway.archive.httpx.Client") as http_type:
+                http_type.return_value.__enter__.return_value = http
+                _upload(archive.directory, Path(folder))
+            self.assertEqual(client.upload_file.call_count, 2)
+            manifest = json.loads(client.put_object.call_args.kwargs["Body"])
+            self.assertEqual(manifest["image_mode"], "mirror_images")
+            self.assertTrue(manifest["external_images"][0]["saved"])
+            self.assertFalse(archive.directory.exists())
 
     def test_queue_position_ticket_binding_and_retry(self):
         key = self.db.get(ApiKey, 1)
