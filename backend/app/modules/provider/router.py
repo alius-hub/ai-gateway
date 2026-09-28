@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.list_filters import filter_expression
 from app.core.responses import success_response
 from app.db.models import Provider, ProviderProtocol, ProviderSecret, User
 from app.db.session import get_db
@@ -139,13 +140,28 @@ def child(db: Session, model: type, provider_id: int, child_id: int):
 @router.get("")
 def list_providers(
     page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
-    keyword: str = "", db: Session = Depends(get_db), _user: User = Depends(actor),
+    keyword: str = "", filters: str | None = Query(None, max_length=4096),
+    db: Session = Depends(get_db), _user: User = Depends(actor),
 ) -> dict:
     statement = select(Provider)
     if keyword.strip():
         statement = statement.where(
             Provider.name.ilike(f"%{keyword.strip()}%") | Provider.code.ilike(f"%{keyword.strip()}%")
         )
+    if filters:
+        secret_count = select(func.count(ProviderSecret.id)).where(
+            ProviderSecret.provider_id == Provider.id).correlate(Provider).scalar_subquery()
+        protocol_count = select(func.count(ProviderProtocol.id)).where(
+            ProviderProtocol.provider_id == Provider.id).correlate(Provider).scalar_subquery()
+        expression = filter_expression(filters, {
+            "id": (Provider.id, "number"), "name": (Provider.name, "text"),
+            "code": (Provider.code, "text"), "provider_type": (Provider.provider_type, "text"),
+            "base_url": (Provider.base_url, "text"), "status": (Provider.status, "select", {"0", "1"}),
+            "secret_count": (secret_count, "number"),
+            "protocol_count": (protocol_count, "number"),
+        })
+        if expression is not None:
+            statement = statement.where(expression)
     total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
     items = db.scalars(statement.order_by(Provider.id.desc()).offset(
         (page - 1) * page_size).limit(page_size)).all()

@@ -3,14 +3,18 @@ import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import AppPagination from "@/AppPagination.vue";
+import AppFilterTags from "@/AppFilterTags.vue";
+import AppListFilter from "@/AppListFilter.vue";
 import AppSelect, { type SelectOption } from "@/AppSelect.vue";
 import {
-  addMember, createIdentity, listIdentity, listMembers, organizationTree,
+  addMember, createIdentity, listIdentity, listMembers, listProjectKeys, organizationTree,
   removeMember, resetUserPassword, updateIdentity, updateMember,
-  type IdentityKind, type IdentityPayload, type IdentityRecord,
+  type IdentityKind, type IdentityPayload, type IdentityRecord, type ProjectKeySummary,
 } from "@/api/identity";
 import { t } from "@/i18n";
 import { useAuthStore } from "@/stores/auth";
+import type { FilterGroup } from "@/types/filter";
+import { listFilterFields, matchesFilterGroup } from "@/utils/listFilterFields";
 import { showToast } from "@/utils/toast";
 
 const route = useRoute();
@@ -23,13 +27,14 @@ const settings: Record<IdentityKind, { title: string; intro: string; primary: st
   users: { title: "用户管理", intro: "管理平台账户、登录状态和用户身份。", primary: "username", columns: ["username", "email", "nickname", "is_platform_admin"] },
   "user-groups": { title: "用户组", intro: "独立管理用户组及成员，不关联组织权限。", primary: "group_name", columns: ["group_name", "group_code"] },
   organizations: { title: "组织管理", intro: "构建多级组织架构，管理成员及组织归属。", primary: "name", columns: ["name", "code", "owner_user_id"] },
-  projects: { title: "项目管理", intro: "管理平台级或组织级项目的环境、负责人和成员。", primary: "name", columns: ["name", "code", "organization_id", "environment", "owner_user_id"] },
+  projects: { title: "项目管理", intro: "管理项目及其所有 Key 共享的累计人民币预算。", primary: "name", columns: ["name", "code", "organization_id", "environment", "owner_user_id", "amount_budget"] },
 };
 const labels: Record<string, string> = {
   username: "用户名", email: "邮箱", nickname: "昵称", password: "初始密码",
   group_name: "用户组名称", group_code: "用户组编码", name: "名称", code: "编码",
   organization_id: "所属组织", parent_id: "上级组织", owner_user_id: "负责人",
   environment: "环境", role: "默认角色", description: "描述", status: "状态",
+  amount_budget: "项目累计预算（人民币元）",
   is_platform_admin: "用户权限",
 };
 const columns = computed(() => settings[kind.value].columns);
@@ -42,15 +47,27 @@ const page = ref(1);
 const pageSize = ref(DEFAULT_PAGE_SIZE);
 const keyword = ref("");
 const filterOrg = ref<string | number>("");
+const filters = ref<FilterGroup>({ mode: "and", conditions: [] });
 const loading = ref(false);
 const busy = ref(false);
 const editing = ref<IdentityRecord | null>(null);
 const formOpen = ref(false);
 const form = ref<IdentityPayload>({});
 const memberTarget = ref<IdentityRecord | null>(null);
+const keyTarget = ref<IdentityRecord | null>(null);
+const projectKeys = ref<ProjectKeySummary[]>([]);
+const keyPage = ref(1);
+const keyTotal = ref(0);
+const projectCost = ref(0);
+const projectBudget = ref<number | null>(null);
+const keysLoading = ref(false);
 const members = ref<IdentityRecord[]>([]);
 const addedMemberIds = ref(new Set<number>());
 const memberCandidates = ref<IdentityRecord[]>([]);
+const candidateFilters = ref<FilterGroup>({ mode: "and", conditions: [] });
+const memberFilters = ref<FilterGroup>({ mode: "and", conditions: [] });
+const visibleMembers = computed(() => members.value.filter((member) =>
+  matchesFilterGroup(member as unknown as Record<string, unknown>, memberFilters.value)));
 const memberQuery = ref("");
 const candidatePage = ref(1);
 const candidateTotal = ref(0);
@@ -64,6 +81,7 @@ let requestId = 0;
 let userRequestId = 0;
 let candidateRequestId = 0;
 let memberRequestId = 0;
+let keyRequestId = 0;
 let candidateTimer: ReturnType<typeof setTimeout> | undefined;
 
 const orgOptions = computed(() => {
@@ -165,10 +183,11 @@ async function load() {
         ? Promise.resolve(null)
         : listIdentity(kind.value, {
           page: page.value, page_size: pageSize.value, keyword: keyword.value.trim(),
+          filters: filters.value,
           ...(filterOrg.value === "platform" ? { scope: "platform" }
             : filterOrg.value ? { organization_id: Number(filterOrg.value) } : {}),
         }),
-      needsOrganizations ? organizationTree() : Promise.resolve([]),
+      needsOrganizations ? organizationTree(kind.value === "organizations" ? filters.value : undefined) : Promise.resolve([]),
     ]);
     if (id !== requestId) return;
     tree.value = hierarchy;
@@ -208,6 +227,7 @@ async function searchMemberCandidates(pageNumber = 1) {
   try {
     const result = await listIdentity("users", {
       page: pageNumber, page_size: 100, keyword: memberQuery.value.trim(), status: 1,
+      filters: candidateFilters.value,
     });
     if (id !== candidateRequestId || !memberTarget.value) return;
     memberCandidates.value = pageNumber === 1 ? result.items : [...memberCandidates.value, ...result.items];
@@ -240,8 +260,52 @@ function closeMembers() {
   addedMemberIds.value = new Set();
   memberCandidates.value = [];
   memberQuery.value = "";
+  candidateFilters.value = { mode: "and", conditions: [] };
+  memberFilters.value = { mode: "and", conditions: [] };
   candidateLoading.value = false;
   membersLoading.value = false;
+}
+
+function closeKeys() {
+  ++keyRequestId;
+  keyTarget.value = null;
+  projectKeys.value = [];
+  keyPage.value = 1;
+  keyTotal.value = 0;
+  projectCost.value = 0;
+  projectBudget.value = null;
+  keysLoading.value = false;
+}
+
+async function loadKeys() {
+  if (!keyTarget.value) return;
+  const id = ++keyRequestId;
+  const projectId = keyTarget.value.id;
+  projectKeys.value = [];
+  keysLoading.value = true;
+  try {
+    const result = await listProjectKeys(projectId, keyPage.value, DEFAULT_PAGE_SIZE);
+    if (id !== keyRequestId || keyTarget.value?.id !== projectId) return;
+    projectKeys.value = result.items;
+    keyTotal.value = result.total;
+    projectCost.value = result.project_total_cost;
+    projectBudget.value = result.project_amount_budget;
+  } catch (reason) {
+    if (id === keyRequestId) showError(reason);
+  } finally {
+    if (id === keyRequestId) keysLoading.value = false;
+  }
+}
+
+function openKeys(item: IdentityRecord) {
+  closeKeys();
+  keyTarget.value = item;
+  projectBudget.value = item.amount_budget ?? null;
+  void loadKeys();
+}
+
+function money(value: number): string {
+  return `¥${Number(value).toFixed(2)}`;
 }
 
 function openForm(item: IdentityRecord | null = null, parentId?: number) {
@@ -255,7 +319,7 @@ function openForm(item: IdentityRecord | null = null, parentId?: number) {
       ...(kind.value === "organizations" ? { name: item.name ?? "", parent_id: item.parent_id ?? "" } : {}),
       ...(kind.value === "projects" ? {
         name: item.name ?? "", environment: item.environment ?? "dev",
-        owner_user_id: item.owner_user_id ?? "",
+        owner_user_id: item.owner_user_id ?? "", amount_budget: item.amount_budget ?? null,
       } : {}),
       description: item.description ?? "",
       status: item.status,
@@ -264,7 +328,7 @@ function openForm(item: IdentityRecord | null = null, parentId?: number) {
       status: 1,
       ...(kind.value === "users" ? { is_platform_admin: 0 } : {}),
       ...(kind.value === "organizations" ? { parent_id: parentId ?? "" } : {}),
-      ...(kind.value === "projects" ? { organization_id: "", environment: "dev", owner_user_id: 0 } : {}),
+      ...(kind.value === "projects" ? { organization_id: "", environment: "dev", owner_user_id: 0, amount_budget: null } : {}),
     };
   formOpen.value = true;
   if (kind.value === "projects") void searchUsers();
@@ -281,8 +345,8 @@ const fields = computed(() => {
     ? ["name", "parent_id", "description", "status"]
     : ["name", "code", "parent_id", "description", "status"];
   return editing.value
-    ? ["name", "environment", "owner_user_id", "description", "status"]
-    : ["organization_id", "name", "code", "environment", "owner_user_id", "description", "status"];
+    ? ["name", "environment", "owner_user_id", "amount_budget", "description", "status"]
+    : ["organization_id", "name", "code", "environment", "owner_user_id", "amount_budget", "description", "status"];
 });
 const requiredFields = computed(() => {
   if (kind.value === "users") return editing.value ? ["email"] : ["username", "email", "password"];
@@ -307,6 +371,7 @@ async function submitForm() {
     if (kind.value === "projects" && !editing.value && payload.organization_id === "") {
       delete payload.organization_id;
     }
+    if (kind.value === "projects" && payload.amount_budget === "") payload.amount_budget = null;
     for (const key of ["organization_id", "owner_user_id", "parent_id"]) {
       if (payload[key] !== undefined && payload[key] !== null && payload[key] !== "") {
         payload[key] = Number(payload[key]);
@@ -433,6 +498,7 @@ async function submitPassword() {
 function display(item: IdentityRecord, key: string): string {
   const value = item[key as keyof IdentityRecord];
   if (key === "is_platform_admin") return Number(value) === 1 ? t("平台管理员") : t("普通用户");
+  if (key === "amount_budget") return value == null ? "不限" : `¥${Number(value).toFixed(2)}`;
   if (key === "organization_id" && value == null && kind.value === "projects") return t("平台级项目");
   if (key === "organization_id" || key === "parent_id") return orgNames.value.get(Number(value)) ?? "-";
   if (key === "owner_user_id") return users.value.find((user) => user.id === value)?.username ?? `#${value}`;
@@ -463,6 +529,7 @@ const memberIds = computed(() => new Set([...members.value.map((member) => membe
 watch(() => route.path, () => {
   ++requestId;
   closeMembers();
+  closeKeys();
   collapsedOrgIds.value = new Set();
   formOpen.value = false;
   passwordTarget.value = null;
@@ -471,12 +538,18 @@ watch(() => route.path, () => {
   pageSize.value = DEFAULT_PAGE_SIZE;
   keyword.value = "";
   filterOrg.value = "";
+  filters.value = { mode: "and", conditions: [] };
   void load();
   if (kind.value === "organizations" || kind.value === "projects") void searchUsers();
 }, { immediate: true });
 watch(page, () => { void load(); });
+watch(keyPage, () => { if (keyTarget.value && !keysLoading.value) void loadKeys(); });
 watch(pageSize, () => { reloadFirstPage(); });
 watch(filterOrg, () => { reloadFirstPage(); });
+function applyFilters(value: FilterGroup) {
+  filters.value = value;
+  reloadFirstPage();
+}
 </script>
 
 <template>
@@ -496,11 +569,13 @@ watch(filterOrg, () => { reloadFirstPage(); });
           <h2>{{ t(kind === "organizations" ? "组织架构" : "资源列表") }}</h2>
           <p>{{ t(kind === "organizations" ? "支持多级组织与下级部门" : `共 ${total} 条记录`) }}</p>
         </div>
+        <AppFilterTags :fields="listFilterFields[kind]" :model-value="filters" @apply="applyFilters" />
         <div class="identity-filters">
           <input v-model="keyword" :aria-label="t('搜索')" :placeholder="t('搜索名称或编码')" @keyup.enter="reloadFirstPage()" />
           <AppSelect v-if="kind === 'projects'" v-model="filterOrg" :options="[{ label: t('全部组织'), value: '' }, { label: t('平台级项目'), value: 'platform' }, ...orgSelectOptions]" :placeholder="t('全部组织')" :aria-label="t('筛选组织')" />
           <button class="identity-btn" type="button" :disabled="loading" @click="reloadFirstPage()">{{ t("查询") }}</button>
           <button class="identity-btn" type="button" :disabled="loading" @click="load()">{{ t("刷新") }}</button>
+          <AppListFilter :fields="listFilterFields[kind]" :model-value="filters" hide-tags @apply="applyFilters" />
         </div>
       </div>
       <div class="identity-scroll">
@@ -526,6 +601,7 @@ watch(filterOrg, () => { reloadFirstPage(); });
               <td><div class="identity-actions">
                 <button v-if="(kind !== 'users' && kind !== 'user-groups') || platformAdmin" type="button" @click="openForm(item)">{{ t("编辑") }}</button>
                 <button v-if="kind !== 'users' && (kind !== 'user-groups' || platformAdmin)" type="button" @click="openMembers(item)">{{ t("成员") }}</button>
+                <button v-if="kind === 'projects'" type="button" @click="openKeys(item)">{{ t("查看 Key") }}</button>
                 <button v-if="kind === 'organizations'" type="button" @click="openForm(null, item.id)">{{ t("新增下级") }}</button>
                 <button v-if="kind === 'users' && platformAdmin" type="button" @click="passwordTarget = item; newPassword = ''">{{ t("重置密码") }}</button>
                 <button v-if="(kind !== 'users' && kind !== 'user-groups') || platformAdmin" type="button" :class="{ 'is-danger': item.status === 1 }" :disabled="busy" @click="confirmation = { type: 'status', item }">{{ t(item.status === 1 ? "停用" : "启用") }}</button>
@@ -557,11 +633,50 @@ watch(filterOrg, () => { reloadFirstPage(); });
             <AppSelect v-else-if="field === 'status'" v-model="form[field]" :options="[{ label: t('启用'), value: 1 }, { label: t('停用'), value: 0 }]" />
             <AppSelect v-else-if="field === 'environment'" v-model="form[field]" :options="[{ label: t('开发'), value: 'dev' }, { label: t('测试'), value: 'test' }, { label: t('生产'), value: 'prod' }]" />
             <textarea v-else-if="field === 'description'" v-model="form[field]" maxlength="255" rows="3" :placeholder="t('选填')" />
-            <input v-else v-model.trim="form[field]" :type="field === 'password' ? 'password' : field === 'email' ? 'email' : 'text'" :minlength="field === 'password' ? 8 : undefined" :maxlength="field === 'email' ? 128 : 64" :placeholder="['group_code', 'code'].includes(field) ? t('留空自动生成') : undefined" :required="requiredFields.includes(field)" />
+            <input v-else v-model.trim="form[field]" :type="field === 'amount_budget' ? 'number' : field === 'password' ? 'password' : field === 'email' ? 'email' : 'text'" :step="field === 'amount_budget' ? '0.01' : undefined" :min="field === 'amount_budget' ? '0.01' : undefined" :minlength="field === 'password' ? 8 : undefined" :maxlength="field === 'email' ? 128 : 64" :placeholder="field === 'amount_budget' ? '留空为不限' : ['group_code', 'code'].includes(field) ? t('留空自动生成') : undefined" :required="requiredFields.includes(field)" />
           </label>
         </div>
         <footer class="identity-dialog__footer"><button type="button" class="identity-btn" @click="formOpen = false">{{ t("取消") }}</button><button type="submit" class="identity-btn identity-primary" :disabled="busy">{{ t(busy ? "保存中..." : "保存") }}</button></footer>
       </form>
+    </div>
+
+    <div v-if="keyTarget" class="app-modal-overlay" @click.self="closeKeys">
+      <div class="app-modal-panel identity-dialog identity-dialog--keys" role="dialog" aria-modal="true" :aria-label="`${keyTarget.name} 的 API Key`">
+        <div class="identity-dialog__head">
+          <div><p>{{ t("项目 API Key") }}</p><h2>{{ keyTarget.name }}</h2></div>
+          <button type="button" :aria-label="t('关闭')" @click="closeKeys">×</button>
+        </div>
+        <p v-if="!keysLoading || projectKeys.length" class="identity-key-summary">
+          {{ t("项目累计用量") }}：{{ money(projectCost) }} / {{ projectBudget == null ? t("不限额") : money(projectBudget) }}
+          <span>（{{ t("所有 Key 共享，费用仅统计人民币") }}）</span>
+        </p>
+        <div class="identity-scroll identity-key-scroll">
+          <table class="identity-table">
+            <thead><tr>
+              <th>{{ t("API Key") }}</th><th>{{ t("归属人") }}</th><th>{{ t("创建人") }}</th><th>{{ t("状态") }}</th>
+              <th>{{ t("累计用量") }}</th><th>{{ t("周期用量 / 限额") }}</th><th>TPM / QPS</th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="key in projectKeys" :key="key.id">
+                <td><strong>{{ key.name }}</strong><br /><code>{{ key.key_prefix }}…</code></td>
+                <td>{{ key.owner_name ?? (key.user_id ? `#${key.user_id}` : t("未指定")) }}</td>
+                <td>{{ key.creator_name ?? `#${key.created_by}` }}</td>
+                <td><span class="identity-status" :class="{ 'is-off': key.status !== 1 || (key.expires_at && Date.parse(key.expires_at) <= Date.now()) }">{{ t(key.status !== 1 ? "停用" : key.expires_at && Date.parse(key.expires_at) <= Date.now() ? "已过期" : "启用") }}</span></td>
+                <td>{{ key.total_tokens.toLocaleString() }} Token<br />{{ money(key.total_cost) }}</td>
+                <td v-if="key.budget_period">
+                  {{ t(key.budget_period === "week" ? "本周" : "本月") }}：{{ key.period_tokens.toLocaleString() }} / {{ key.token_budget?.toLocaleString() ?? t("不限") }} Token
+                  <br />{{ money(key.period_cost) }} / {{ key.amount_budget == null ? t("不限额") : money(key.amount_budget) }}
+                </td>
+                <td v-else>{{ t("未设置周期限额") }}</td>
+                <td>{{ key.tpm_limit?.toLocaleString() ?? t("不限") }} / {{ key.qps_limit ?? t("不限") }}</td>
+              </tr>
+              <tr v-if="!projectKeys.length"><td colspan="7" class="identity-empty">{{ t(keysLoading ? "正在加载数据..." : "暂无 Key") }}</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <AppPagination v-if="keyTotal > DEFAULT_PAGE_SIZE" v-model="keyPage" :total="keyTotal" :page-size="DEFAULT_PAGE_SIZE" :disabled="keysLoading" />
+        <footer class="identity-dialog__footer"><button type="button" class="identity-btn" @click="closeKeys">{{ t("关闭") }}</button></footer>
+      </div>
     </div>
 
     <div v-if="memberTarget" class="app-modal-overlay" @click.self="closeMembers">
@@ -569,7 +684,9 @@ watch(filterOrg, () => { reloadFirstPage(); });
         <div class="identity-dialog__head"><div><p>{{ t("成员管理") }}</p><h2>{{ display(memberTarget, settings[kind].primary) }}</h2></div><button type="button" aria-label="关闭" @click="closeMembers">×</button></div>
         <div class="identity-member-columns">
           <section class="identity-member-column">
-            <div class="identity-member-column__head"><h3>{{ t("添加成员") }}</h3><span>{{ t("搜索用户并点击添加") }}</span></div>
+            <div class="identity-member-column__head"><h3>{{ t("添加成员") }}</h3><span>{{ t("搜索用户并点击添加") }}</span>
+              <AppListFilter :fields="listFilterFields.users" :model-value="candidateFilters" @apply="candidateFilters = $event; searchMemberCandidates(1)" />
+            </div>
             <input v-model="memberQuery" class="identity-member-search" :placeholder="t('按用户名或邮箱搜索用户')" :aria-label="t('搜索可添加用户')" @input="scheduleMemberSearch" />
             <AppSelect v-if="kind !== 'user-groups'" v-model="memberRole" :options="roleOptions" :aria-label="t('新成员角色')" />
             <div class="identity-member-list">
@@ -584,9 +701,11 @@ watch(filterOrg, () => { reloadFirstPage(); });
             </div>
           </section>
           <section class="identity-member-column">
-            <div class="identity-member-column__head"><h3>{{ t("当前成员") }}</h3><span>{{ members.length }}</span></div>
+            <div class="identity-member-column__head"><h3>{{ t("当前成员") }}</h3><span>{{ visibleMembers.length }}</span>
+              <AppListFilter :fields="listFilterFields.members" :model-value="memberFilters" @apply="memberFilters = $event" />
+            </div>
             <div class="identity-member-list">
-              <div v-for="member in members" :key="member.id" class="identity-member">
+              <div v-for="member in visibleMembers" :key="member.id" class="identity-member">
                 <span class="identity-avatar">{{ (member.nickname || member.username || "?").slice(0, 1).toUpperCase() }}</span>
                 <span class="identity-member__info"><strong>{{ member.nickname || member.username }}</strong><small>{{ member.email }}</small></span>
                 <AppSelect v-if="kind !== 'user-groups'" :model-value="member.role" :options="roleOptions" :disabled="busy" @change="changeMemberRole(member, String($event))" />
@@ -594,7 +713,7 @@ watch(filterOrg, () => { reloadFirstPage(); });
                 <button type="button" :disabled="busy" @click="confirmation = { type: 'member', item: member }">{{ t("移除") }}</button>
               </div>
               <p v-if="membersLoading && !members.length" class="identity-empty">{{ t("正在加载数据...") }}</p>
-              <p v-else-if="!members.length" class="identity-empty">{{ t("暂无成员") }}</p>
+              <p v-else-if="!visibleMembers.length" class="identity-empty">{{ t("暂无匹配成员") }}</p>
             </div>
           </section>
         </div>
@@ -660,6 +779,13 @@ watch(filterOrg, () => { reloadFirstPage(); });
 .identity-empty { padding:40px!important; color:#92a3ad!important; text-align:center; font-size:12px; }
 .identity-dialog { display:flex; flex-direction:column; width:min(480px,100%); padding:30px; }
 .identity-dialog--wide { width:min(920px,100%); min-height:min(520px,calc(100dvh - 32px)); }
+.identity-dialog--keys { width:min(1060px,100%); }
+.identity-key-summary { margin:18px 0; color:#405662; font-size:13px; }
+.identity-key-summary span { color:#8a9ca8; font-size:12px; }
+.identity-key-scroll { min-height:120px; }
+.identity-key-scroll .identity-table { min-width:860px; }
+.identity-key-scroll td { line-height:1.8; }
+.identity-key-scroll code { color:#798d9a; }
 .identity-dialog--confirm { width:min(420px,100%); }
 .identity-confirm-message { margin:24px 0; color:#405662; font-size:13px; line-height:1.6; }
 .identity-dialog__head { display:flex; justify-content:space-between; align-items:flex-start; padding-bottom:24px; border-bottom:1px solid #e9eff0; }
@@ -674,7 +800,7 @@ watch(filterOrg, () => { reloadFirstPage(); });
 .identity-member-columns { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); min-height:0; flex:1; }
 .identity-member-column { display:flex; flex-direction:column; min-width:0; padding:20px 18px 0 0; }
 .identity-member-column + .identity-member-column { border-left:1px solid #e9eff0; padding-right:0; padding-left:18px; }
-.identity-member-column__head { display:flex; justify-content:space-between; align-items:center; gap:8px; min-height:25px; margin-bottom:14px; }
+.identity-member-column__head { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; min-height:25px; margin-bottom:14px; }
 .identity-member-column__head h3 { margin:0; color:#213743; font-size:14px; }
 .identity-member-column__head span { color:#8a9ca8; font-size:11px; }
 .identity-member-search { width:100%; margin-bottom:10px; }

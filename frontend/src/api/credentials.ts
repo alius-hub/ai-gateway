@@ -1,6 +1,7 @@
 import { http } from "@/api/http";
 import type { ApiEnvelope } from "@/types/api";
 import type { PageResult } from "@/types/list";
+import { encodeFilter, type FilterGroup } from "@/types/filter";
 
 export type KeyScope = "user" | "project";
 
@@ -12,6 +13,7 @@ export interface CredentialSettings {
   tpm_limit: number | null;
   qps_limit: number | null;
   token_budget: number | null;
+  amount_budget: number | null;
   budget_period: "week" | "month" | null;
   wait_mode: "queue" | "block";
   max_wait_ms: number;
@@ -21,6 +23,7 @@ export interface CredentialItem extends CredentialSettings {
   id: number;
   scope_type: KeyScope;
   user_id: number | null;
+  owner_name: string | null;
   project_id: number | null;
   organization_id: number | null;
   key_prefix: string;
@@ -43,9 +46,9 @@ async function unwrap<T>(request: Promise<ApiEnvelope<T>>): Promise<T> {
   return (await request).data;
 }
 
-export function listCredentials(scope: KeyScope, page: number, pageSize: number) {
+export function listCredentials(scope: KeyScope, page: number, pageSize: number, filters?: FilterGroup) {
   return unwrap(http.get<ApiEnvelope<PageResult<CredentialItem>>, ApiEnvelope<PageResult<CredentialItem>>>(
-    path(scope), { params: { page, page_size: pageSize } },
+    path(scope), { params: { page, page_size: pageSize, filters: encodeFilter(filters) } },
   ));
 }
 

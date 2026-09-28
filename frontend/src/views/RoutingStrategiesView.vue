@@ -1,11 +1,18 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 
+import AppListFilter from "@/AppListFilter.vue";
+import AppFilterTags from "@/AppFilterTags.vue";
 import { listBuiltinStrategies, type BuiltinStrategy } from "@/api/workflows";
+import type { FilterGroup } from "@/types/filter";
+import { listFilterFields, matchesFilterGroup } from "@/utils/listFilterFields";
 import { showToast } from "@/utils/toast";
 
 const strategies = ref<BuiltinStrategy[]>([]);
+const filters = ref<FilterGroup>({ mode: "and", conditions: [] });
+const visibleStrategies = computed(() => strategies.value.filter((item) =>
+  matchesFilterGroup(item as unknown as Record<string, unknown>, filters.value)));
 const loading = ref(true);
 
 onMounted(async () => {
@@ -24,12 +31,16 @@ onMounted(async () => {
     <div class="page-card">
       <div class="strategy-heading">
         <div><h2>内置路由策略</h2><p>策略由平台代码提供，无需创建或编排。新建聚合模型时选择策略并配置接入模型。</p></div>
-        <RouterLink class="page-action" to="/models/aggregated">前往聚合模型</RouterLink>
+        <AppFilterTags :fields="listFilterFields.strategies" :model-value="filters" @apply="filters = $event" />
+        <div class="app-list-toolbar-actions">
+          <RouterLink class="page-action" to="/models/aggregated">前往聚合模型</RouterLink>
+          <AppListFilter :fields="listFilterFields.strategies" :model-value="filters" hide-tags @apply="filters = $event" />
+        </div>
       </div>
       <div v-if="loading" class="strategy-state">正在加载策略...</div>
-      <div v-else-if="!strategies.length" class="strategy-state">暂无可用策略。</div>
+      <div v-else-if="!visibleStrategies.length" class="strategy-state">暂无匹配策略。</div>
       <div v-else class="strategy-grid">
-        <article v-for="strategy in strategies" :key="strategy.code" class="strategy-card">
+        <article v-for="strategy in visibleStrategies" :key="strategy.code" class="strategy-card">
           <h3>{{ strategy.name }}</h3>
           <p>{{ strategy.description }}</p>
           <span>{{ strategy.min_models === 1 ? "选择 1 个接入模型" : "选择 2 至 30 个接入模型" }}</span>

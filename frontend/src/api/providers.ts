@@ -1,6 +1,7 @@
 import { http } from "@/api/http";
 import type { ApiEnvelope } from "@/types/api";
 import type { PageResult } from "@/types/list";
+import { encodeFilter, type FilterGroup } from "@/types/filter";
 import type { ProviderItem } from "@/types/resource";
 
 export interface ProviderPayload {
@@ -34,9 +35,9 @@ async function unwrap<T>(request: Promise<ApiEnvelope<T>>): Promise<T> {
   return (await request).data;
 }
 
-export function listProviders(params: { page: number; page_size: number; keyword: string }) {
+export function listProviders(params: { page: number; page_size: number; keyword: string; filters?: FilterGroup }) {
   return unwrap(http.get<ApiEnvelope<PageResult<ProviderItem>>, ApiEnvelope<PageResult<ProviderItem>>>(
-    "/providers", { params },
+    "/providers", { params: { ...params, filters: encodeFilter(params.filters) } },
   ));
 }
 

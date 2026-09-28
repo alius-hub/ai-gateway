@@ -1,5 +1,6 @@
 import { http } from "@/api/http";
 import type { ApiEnvelope } from "@/types/api";
+import { encodeFilter, type FilterGroup } from "@/types/filter";
 
 export interface CallLog {
   request_id: string;
@@ -10,14 +11,25 @@ export interface CallLog {
   model: string;
   model_type: string;
   provider_id: number | null;
+  provider_model_id: number | null;
+  provider_status: string | null;
+  error_message: string | null;
+  requester_ip: string;
   endpoint: string;
   http_status: number;
   latency_ms: number | null;
+  ttft_ms: number | null;
+  tpot_ms: number | null;
   error_code: string | null;
   total_tokens: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  reasoning_tokens: number | null;
+  non_reasoning_tokens: number | null;
 }
 
 export interface CallLogDetail extends CallLog {
+  images: { kind: "url" | "inline" | "base64"; url: string | null; index: number }[];
   archive: null | {
     status: "pending" | "stored" | "unavailable";
     manifest?: {
@@ -39,9 +51,9 @@ type CallPage = {
     total: number;
 };
 
-export async function listCallLogs(page: number, requestId: string): Promise<CallPage> {
+export async function listCallLogs(page: number, requestId: string, filters?: FilterGroup): Promise<CallPage> {
   const response = await http.get<ApiEnvelope<CallPage>, ApiEnvelope<CallPage>>(
-    "/logs/requests", { params: { page, page_size: 20, request_id: requestId || undefined } },
+    "/logs/requests", { params: { page, page_size: 20, request_id: requestId || undefined, filters: encodeFilter(filters) } },
   );
   return response.data;
 }
@@ -51,4 +63,11 @@ export async function getCallLog(requestId: string): Promise<CallLogDetail> {
     `/logs/requests/${encodeURIComponent(requestId)}`,
   );
   return response.data;
+}
+
+export async function getCallImage(requestId: string, index: number): Promise<Blob> {
+  return http.get<Blob, Blob>(
+    `/logs/requests/${encodeURIComponent(requestId)}/images/${index}`,
+    { responseType: "blob" },
+  );
 }

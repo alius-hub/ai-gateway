@@ -1,20 +1,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.list_filters import filter_expression
 from app.core.responses import success_response
 from app.core.security import hash_password
 from app.db.models import (
-    Organization, OrganizationMember, Project, ProjectMember, User, UserGroup, UserGroupMember,
+    ApiKey,
+    Organization,
+    OrganizationMember,
+    Project,
+    ProjectMember,
+    UsageRecord,
+    User,
+    UserGroup,
+    UserGroupMember,
 )
 from app.db.session import get_db
 from app.modules.auth.service import get_current_user
@@ -40,8 +51,19 @@ class EntityPayload(BaseModel):
     parent_id: int | None = Field(default=None, gt=0)
     owner_user_id: int | None = None
     environment: Literal["dev", "test", "prod"] | None = None
+    amount_budget: Decimal | None = Field(default=None, gt=0, lt=10000000000000000)
     role: Literal["org_admin", "member", "readonly"] | None = None
     status: Literal[0, 1] | None = None
+
+    @field_validator("amount_budget")
+    @classmethod
+    def round_budget(cls, value: Decimal | None) -> Decimal | None:
+        if value is None:
+            return None
+        rounded = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if rounded <= 0:
+            raise ValueError("项目预算至少为 0.01 元。")
+        return rounded
 
 
 class MemberPayload(BaseModel):
@@ -80,7 +102,8 @@ SPECS = {
         Organization, ("name", "code", "description", "parent_id", "status"), ("name",), "name",
     ),
     "projects": Spec(
-        Project, ("organization_id", "name", "code", "environment", "description", "status", "owner_user_id"),
+        Project, ("organization_id", "name", "code", "environment",
+                  "description", "status", "owner_user_id", "amount_budget"),
         ("name",), "name",
     ),
 }
@@ -254,11 +277,49 @@ def validate_parent(db: Session, parent_id: int | None, item_id: int | None = No
         parent_id = parent.parent_id
 
 
+def identity_filter_columns(kind: str):
+    spec = spec_for(kind)
+    kinds = {
+        "id": "number", "owner_user_id": "number", "organization_id": "number",
+        "is_platform_admin": "select", "status": "select", "environment": "select",
+        "amount_budget": "decimal",
+    }
+    allowed = {
+        "users": ("id", "username", "email", "nickname", "is_platform_admin", "status"),
+        "user-groups": ("id", "group_name", "group_code", "status"),
+        "organizations": ("id", "name", "code", "owner_user_id", "status"),
+        "projects": ("id", "name", "code", "organization_id", "environment",
+                     "owner_user_id", "amount_budget", "status"),
+    }[kind]
+    return {
+        field: (getattr(spec.model, field), kinds.get(field, "text"),
+                {"dev", "test", "prod"} if field == "environment" else {"0", "1"})
+        if field in ("is_platform_admin", "status", "environment")
+        else (getattr(spec.model, field), kinds.get(field, "text"))
+        for field in allowed
+    }
+
+
 @router.get("/organizations/tree")
-def organization_tree(db: Session = Depends(get_db), user: User = Depends(actor)) -> dict:
+def organization_tree(filters: str | None = Query(None, max_length=4096),
+                      db: Session = Depends(get_db), user: User = Depends(actor)) -> dict:
     items = db.scalars(select(Organization).where(Organization.deleted_at.is_(None)).order_by(
         Organization.name, Organization.id)).all()
     items = [item for item in items if organization_role(db, user, item.id)]
+    if filters:
+        expression = filter_expression(filters, identity_filter_columns("organizations"))
+        if expression is not None:
+            matches = set(db.scalars(select(Organization.id).where(
+                Organization.deleted_at.is_(None), expression)).all())
+            visible = {item.id: item for item in items}
+            keep = set()
+            for item in items:
+                if item.id in matches:
+                    parent = item
+                    while parent and parent.id not in keep:
+                        keep.add(parent.id)
+                        parent = visible.get(parent.parent_id)
+            items = [item for item in items if item.id in keep]
     nodes = {item.id: {**serialize(item), "children": []} for item in items}
     roots = []
     for item in items:
@@ -275,6 +336,7 @@ def list_entities(
     kind: str, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
     keyword: str = "", status: int | None = Query(None, ge=0, le=1),
     organization_id: int | None = None, scope: Literal["platform"] | None = None,
+    filters: str | None = Query(None, max_length=4096),
     db: Session = Depends(get_db),
     user: User = Depends(actor),
 ) -> dict:
@@ -291,6 +353,10 @@ def list_entities(
         conditions.append(or_(*searchable))
     if status is not None:
         conditions.append(spec.model.status == status)
+    if filters:
+        expression = filter_expression(filters, identity_filter_columns(kind))
+        if expression is not None:
+            conditions.append(expression)
     if organization_id is not None and kind == "user-groups":
         raise HTTPException(422, "用户组不按组织筛选。")
     if scope is not None:
@@ -392,6 +458,92 @@ def get_entity(kind: str, entity_id: int, db: Session = Depends(get_db),
     return success_response(serialize(item)).model_dump(mode="json")
 
 
+@router.get("/projects/{entity_id}/keys")
+def project_keys(
+    entity_id: int, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db), user: User = Depends(actor),
+) -> dict:
+    project = active(db, Project, entity_id)
+    require_access(db, user, "projects", project)
+    keys = select(ApiKey).where(
+        ApiKey.project_id == entity_id, ApiKey.scope_type == "project",
+        ApiKey.deleted_at.is_(None),
+    )
+    total = db.scalar(select(func.count()).select_from(keys.subquery())) or 0
+    items = db.scalars(keys.order_by(ApiKey.id.desc()).offset(
+        (page - 1) * page_size).limit(page_size)).all()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    week_start = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    spent = db.scalar(select(func.coalesce(func.sum(UsageRecord.estimated_cost), 0)).where(
+        UsageRecord.project_id == entity_id, UsageRecord.currency == "CNY",
+    ))
+    names = {
+        member.id: member.username for member in db.scalars(select(User).where(
+            User.id.in_({id_ for item in items for id_ in (item.created_by, item.user_id)
+                         if id_ is not None}),
+        ))
+    } if items else {}
+    usage = {}
+    if items:
+        usage = {
+            key_id: (int(tokens or 0), cost or Decimal("0"),
+                     int(week_tokens or 0), week_cost or Decimal("0"),
+                     int(month_tokens or 0), month_cost or Decimal("0"))
+            for key_id, tokens, cost, week_tokens, week_cost, month_tokens, month_cost
+            in db.execute(
+                select(
+                    UsageRecord.api_key_id,
+                    func.sum(UsageRecord.total_tokens),
+                    func.sum(UsageRecord.estimated_cost).filter(UsageRecord.currency == "CNY"),
+                    func.sum(UsageRecord.total_tokens).filter(
+                        UsageRecord.created_at >= week_start),
+                    func.sum(UsageRecord.estimated_cost).filter(
+                        UsageRecord.currency == "CNY", UsageRecord.created_at >= week_start),
+                    func.sum(UsageRecord.total_tokens).filter(
+                        UsageRecord.created_at >= month_start),
+                    func.sum(UsageRecord.estimated_cost).filter(
+                        UsageRecord.currency == "CNY", UsageRecord.created_at >= month_start),
+                ).where(UsageRecord.api_key_id.in_([item.id for item in items]))
+                .group_by(UsageRecord.api_key_id)
+            )
+        }
+    empty_usage = (0, Decimal("0"), 0, Decimal("0"), 0, Decimal("0"))
+
+    def key_summary(item: ApiKey) -> dict:
+        tokens, cost, week_tokens, week_cost, month_tokens, month_cost = usage.get(
+            item.id, empty_usage,
+        )
+        period_tokens, period_cost = (
+            (week_tokens, week_cost) if item.budget_period == "week"
+            else (month_tokens, month_cost) if item.budget_period == "month"
+            else (0, Decimal("0"))
+        )
+        return {
+            "id": item.id, "name": item.name, "key_prefix": item.key_prefix,
+            "user_id": item.user_id, "owner_name": names.get(item.user_id),
+            "created_by": item.created_by,
+            "creator_name": names.get(item.created_by),
+            "status": item.status, "expires_at": (
+                item.expires_at.replace(tzinfo=UTC)
+                if item.expires_at and item.expires_at.tzinfo is None else item.expires_at
+            ),
+            "tpm_limit": item.tpm_limit, "qps_limit": item.qps_limit,
+            "token_budget": item.token_budget, "amount_budget": item.amount_budget,
+            "budget_period": item.budget_period,
+            "total_tokens": tokens, "total_cost": cost,
+            "period_tokens": period_tokens, "period_cost": period_cost,
+        }
+
+    return success_response({
+        "items": [key_summary(item) for item in items],
+        "total": total, "page": page, "page_size": page_size,
+        "project_amount_budget": project.amount_budget, "project_total_cost": spent,
+    }).model_dump(mode="json")
+
+
 @router.patch("/{kind}/{entity_id}")
 def update_entity(kind: str, entity_id: int, payload: EntityPayload,
                   db: Session = Depends(get_db), user: User = Depends(actor)) -> dict:
@@ -406,7 +558,8 @@ def update_entity(kind: str, entity_id: int, payload: EntityPayload,
     if any(field in data for field in immutable[kind]):
         raise HTTPException(422, "编码和归属信息创建后不可修改。")
     if any(value is None for field, value in data.items()
-           if not (kind == "organizations" and field == "parent_id")):
+           if not (kind == "organizations" and field == "parent_id")
+           and not (kind == "projects" and field == "amount_budget")):
         raise HTTPException(422, "请提供有效字段值。")
     if kind == "users":
         next_status = data.get("status", item.status)

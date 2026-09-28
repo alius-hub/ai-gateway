@@ -1,4 +1,5 @@
 import copy
+import json
 import unittest
 
 from fastapi import HTTPException
@@ -102,6 +103,42 @@ class RoutingWorkflowTest(unittest.TestCase):
         self.db.commit()
         self.db.refresh(item)
         return item.id
+
+    def test_aggregate_list_search_and_pagination(self):
+        path = "/api/admin/v1/aggregate-models"
+        self.db.add_all([
+            AggregatedModel(aggregate_model_code="alpha-code", public_model_name="First",
+                            model_type="llm", default_routing_strategy="single", status=1),
+            AggregatedModel(aggregate_model_code="beta-code", public_model_name="Alpha Public",
+                            model_type="llm", default_routing_strategy="single", status=0),
+            AggregatedModel(aggregate_model_code="other", public_model_name="Third",
+                            model_type="llm", default_routing_strategy="single", status=1),
+        ])
+        self.db.commit()
+        all_items = self.client.get(path, headers=self.viewer).json()["data"]
+        self.assertEqual((len(all_items["items"]), all_items["total"]), (3, 3))
+
+        first = self.client.get(path, headers=self.viewer, params={
+            "keyword": "  ALPHA ", "page": 1, "page_size": 1,
+        }).json()["data"]
+        second = self.client.get(path, headers=self.viewer, params={
+            "keyword": "alpha", "page": 2, "page_size": 1,
+        }).json()["data"]
+        self.assertEqual((first["total"], first["page"], first["page_size"]), (2, 1, 1))
+        self.assertEqual([item["aggregate_model_code"] for item in first["items"]], ["alpha-code"])
+        self.assertEqual([item["aggregate_model_code"] for item in second["items"]], ["beta-code"])
+
+        filtered = self.client.get(path, headers=self.viewer, params={
+            "keyword": "alpha", "page": 1, "page_size": 1,
+            "filters": json.dumps({"mode": "and", "conditions": [
+                {"field": "status", "operator": "eq", "value": "0"},
+            ]}),
+        }).json()["data"]
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(filtered["items"][0]["aggregate_model_code"], "beta-code")
+        self.assertEqual(self.client.get(path, headers=self.viewer, params={
+            "page_size": 101,
+        }).status_code, 422)
 
     def test_read_simulate_fallback_and_bind_historical_workflow(self):
         self.assertEqual(self.client.post(self.path, json=self.payload, headers=self.admin).status_code, 405)
@@ -261,6 +298,7 @@ class RoutingWorkflowTest(unittest.TestCase):
         self.assertEqual(self.client.post(path, json=invalid, headers=self.admin).status_code, 422)
         single = self.client.post(path, json=base, headers=self.admin)
         self.assertEqual(single.status_code, 201, single.text)
+        self.assertFalse(single.json()["data"]["retry_on_failure"])
         self.assertIsNone(single.json()["data"]["workflow_id"])
         self.assertEqual(single.json()["data"]["routing_model_ids"], [10])
         single_id = single.json()["data"]["id"]
@@ -275,6 +313,20 @@ class RoutingWorkflowTest(unittest.TestCase):
                        "default_routing_strategy": "round_robin", "routing_model_ids": [10, 11]}
         created = self.client.post(path, json=round_robin, headers=self.admin)
         self.assertEqual(created.status_code, 201, created.text)
+        aggregate_id = created.json()["data"]["id"]
+        enabled = self.client.put(f"{path}/{aggregate_id}", json={
+            **round_robin, "retry_on_failure": True,
+        }, headers=self.admin)
+        self.assertEqual(enabled.status_code, 200, enabled.text)
+        self.assertTrue(enabled.json()["data"]["retry_on_failure"])
+        listed = self.client.get(path, headers=self.viewer).json()["data"]["items"]
+        self.assertTrue(next(item for item in listed if item["id"] == aggregate_id)[
+            "retry_on_failure"
+        ])
+        self.assertEqual(self.client.put(f"{path}/{aggregate_id}", json={
+            **base, "aggregate_model_code": "builtin-round",
+            "public_model_name": "builtin-round", "retry_on_failure": True,
+        }, headers=self.admin).status_code, 422)
         simulate = f"{path}/{created.json()['data']['id']}/simulate"
         self.assertEqual(self.client.post(simulate, json={"round_robin_index": 0},
                                           headers=self.viewer).json()["data"]["selected_model_id"], 10)

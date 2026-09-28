@@ -72,9 +72,9 @@ export const navigation: NavigationGroup[] = [
     id: "analytics",
     label: "分析看板",
     items: [
-      { label: "用量分析", path: "/analytics/usage", planned: true, description: "分析请求量、Token 消耗和使用趋势。" },
-      { label: "成本分析", path: "/analytics/cost", planned: true, description: "按项目、模型和供应商分析成本。" },
-      { label: "性能分析", path: "/analytics/performance", planned: true, description: "查看延迟、错误率和模型性能。" },
+      { label: "用量分析", path: "/analytics/usage", description: "分析请求量、Token 消耗和使用趋势。" },
+      { label: "成本分析", path: "/analytics/cost", description: "按项目、模型和供应商分析成本。" },
+      { label: "性能分析", path: "/analytics/performance", description: "查看延迟、错误率和模型性能。" },
     ],
   },
   {

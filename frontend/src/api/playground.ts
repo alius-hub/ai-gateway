@@ -1,6 +1,7 @@
 import { http } from "@/api/http";
 import type { ApiEnvelope } from "@/types/api";
 import type { PageResult } from "@/types/list";
+import { encodeFilter, type FilterGroup } from "@/types/filter";
 import { getAccessToken, removeAccessToken, removeUserCache } from "@/utils/auth";
 
 export interface ChatMessage {
@@ -64,10 +65,10 @@ export interface DebugHistoryDetail extends DebugHistoryItem {
   parsed_content: string | null;
 }
 
-export async function listDebugHistory(page: number, pageSize = 20): Promise<PageResult<DebugHistoryItem>> {
+export async function listDebugHistory(page: number, pageSize = 20, filters?: FilterGroup): Promise<PageResult<DebugHistoryItem>> {
   const response = await http.get<ApiEnvelope<PageResult<DebugHistoryItem>>,
     ApiEnvelope<PageResult<DebugHistoryItem>>>("/playground/history", {
-    params: { page, page_size: pageSize },
+    params: { page, page_size: pageSize, filters: encodeFilter(filters) },
   });
   return response.data;
 }

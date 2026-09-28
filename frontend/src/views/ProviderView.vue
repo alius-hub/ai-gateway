@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 
 import AppPagination from "@/AppPagination.vue";
 import AppSelect from "@/AppSelect.vue";
+import AppListFilter from "@/AppListFilter.vue";
 import {
   createProtocol, createProvider, createSecret, listProtocols, listProviders, listSecrets,
   setProviderStatus, updateProtocol, updateProvider, updateSecret,
@@ -10,7 +11,9 @@ import {
 } from "@/api/providers";
 import { t } from "@/i18n";
 import { useAuthStore } from "@/stores/auth";
+import type { FilterGroup } from "@/types/filter";
 import type { ProviderItem } from "@/types/resource";
+import { listFilterFields, matchesFilterGroup } from "@/utils/listFilterFields";
 import { showToast } from "@/utils/toast";
 
 const auth = useAuthStore();
@@ -19,6 +22,7 @@ const page = ref(1);
 const pageSize = ref(20);
 const total = ref(0);
 const keyword = ref("");
+const filters = ref<FilterGroup>({ mode: "and", conditions: [] });
 const loading = ref(false);
 const busy = ref(false);
 const editing = ref<ProviderItem | null>(null);
@@ -27,6 +31,12 @@ const confirmTarget = ref<ProviderItem | null>(null);
 const connectionTarget = ref<ProviderItem | null>(null);
 const protocols = ref<ProviderProtocol[]>([]);
 const secrets = ref<ProviderSecret[]>([]);
+const protocolFilters = ref<FilterGroup>({ mode: "and", conditions: [] });
+const secretFilters = ref<FilterGroup>({ mode: "and", conditions: [] });
+const visibleProtocols = computed(() => protocols.value.filter((item) =>
+  matchesFilterGroup(item as unknown as Record<string, unknown>, protocolFilters.value)));
+const visibleSecrets = computed(() => secrets.value.filter((item) =>
+  matchesFilterGroup(item as unknown as Record<string, unknown>, secretFilters.value)));
 const connectionBusy = ref(false);
 const protocolEditing = ref<ProviderProtocol | null>(null);
 const protocolForm = ref({ code: "", protocol_type: "openai_compatible", base_url: "" });
@@ -51,7 +61,9 @@ async function load() {
   loading.value = true;
   records.value = [];
   try {
-    const result = await listProviders({ page: page.value, page_size: pageSize.value, keyword: keyword.value.trim() });
+    const result = await listProviders({
+      page: page.value, page_size: pageSize.value, keyword: keyword.value.trim(), filters: filters.value,
+    });
     if (id !== requestId) return;
     records.value = result.items;
     total.value = result.total;
@@ -65,6 +77,11 @@ async function load() {
 function search() {
   if (page.value === 1) void load();
   else page.value = 1;
+}
+
+function applyFilters(value: FilterGroup) {
+  filters.value = value;
+  search();
 }
 
 function openForm(item: ProviderItem | null = null) {
@@ -123,6 +140,8 @@ function openConnections(item: ProviderItem) {
   connectionTarget.value = item;
   protocols.value = [];
   secrets.value = [];
+  protocolFilters.value = { mode: "and", conditions: [] };
+  secretFilters.value = { mode: "and", conditions: [] };
   protocolEditing.value = null;
   protocolForm.value = { code: "", protocol_type: "openai_compatible", base_url: "" };
   secretForm.value = { name: "", api_key: "" };
@@ -219,11 +238,14 @@ watch([page, pageSize], () => void load(), { immediate: true });
     <div class="page-card provider-card">
       <div class="provider-toolbar">
         <div><h2>{{ t("供应商列表") }}</h2><p>{{ t("当前共 {count} 条记录", { count: total }) }}</p></div>
-        <form class="provider-search" @submit.prevent="search">
-          <input v-model="keyword" :aria-label="t('搜索供应商')" :placeholder="t('按名称或编码搜索')" />
-          <button type="submit" :disabled="loading">{{ t("查询") }}</button>
-          <button type="button" :disabled="loading" @click="load">{{ t("刷新") }}</button>
-        </form>
+        <div class="app-list-toolbar-actions provider-toolbar__actions">
+          <form class="provider-search" @submit.prevent="search">
+            <input v-model="keyword" :aria-label="t('搜索供应商')" :placeholder="t('按名称或编码搜索')" />
+            <button type="submit" :disabled="loading">{{ t("查询") }}</button>
+            <button type="button" :disabled="loading" @click="load">{{ t("刷新") }}</button>
+          </form>
+          <AppListFilter :fields="listFilterFields.providers" :model-value="filters" @apply="applyFilters" />
+        </div>
       </div>
       <div class="resource-table-scroll">
         <table class="resource-table">
@@ -294,8 +316,11 @@ watch([page, pageSize], () => void load(), { immediate: true });
       <div class="app-modal-panel provider-dialog provider-dialog--wide" role="dialog" aria-modal="true" :aria-label="t('连接配置')">
         <header><h2>{{ connectionTarget.name }} · {{ t("连接配置") }}</h2><button type="button" aria-label="关闭" :disabled="connectionBusy" @click="closeConnections">×</button></header>
         <section class="provider-section">
-          <h3>{{ t("协议与地址") }}</h3>
-          <div v-for="item in protocols" :key="item.id" class="provider-connection">
+          <div class="provider-section__header">
+            <h3>{{ t("协议与地址") }}</h3>
+            <AppListFilter :fields="listFilterFields.protocols" :model-value="protocolFilters" @apply="protocolFilters = $event" />
+          </div>
+          <div v-for="item in visibleProtocols" :key="item.id" class="provider-connection">
             <div><strong>{{ item.code }} · {{ item.protocol_type }}</strong><small>{{ item.base_url }}</small></div>
             <span>{{ t(item.status === 1 ? "启用" : "停用") }}</span>
             <button v-if="isAdmin()" type="button" @click="protocolEditing = item; protocolForm = { code: item.code, protocol_type: item.protocol_type, base_url: item.base_url }">{{ t("编辑") }}</button>
@@ -310,9 +335,12 @@ watch([page, pageSize], () => void load(), { immediate: true });
           </form>
         </section>
         <section v-if="isAdmin()" class="provider-section">
-          <h3>{{ t("上游密钥") }}</h3>
+          <div class="provider-section__header">
+            <h3>{{ t("上游密钥") }}</h3>
+            <AppListFilter :fields="listFilterFields.secrets" :model-value="secretFilters" @apply="secretFilters = $event" />
+          </div>
           <p>{{ t("密钥只显示名称和状态，明文不会返回页面。") }}</p>
-          <div v-for="item in secrets" :key="item.id" class="provider-connection">
+          <div v-for="item in visibleSecrets" :key="item.id" class="provider-connection">
             <strong>{{ item.name }}</strong><span>{{ t(item.status === 1 ? "启用" : "停用") }}</span>
             <button type="button" @click="rotating = item; secretForm = { name: item.name, api_key: '' }">{{ t("轮换") }}</button>
             <button type="button" @click="pendingStatus = { kind: 'secret', id: item.id, status: item.status === 1 ? 0 : 1 }">{{ t(item.status === 1 ? "停用" : "启用") }}</button>
@@ -348,9 +376,13 @@ watch([page, pageSize], () => void load(), { immediate: true });
 .provider-hero h1 { margin:0 0 8px; font-size:23px; color:#172f3a; }
 .provider-hero p,.provider-toolbar p { margin:0; color:#8a9ca8; font-size:12px; }
 .provider-card { padding:0; overflow:hidden; }
-.provider-toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; padding:22px 24px; }
+.provider-toolbar { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:8px; padding:22px 24px; }
 .provider-toolbar h2 { margin:0 0 6px; font-size:16px; }
 .provider-search,.provider-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.provider-toolbar__actions { display:contents; }
+.provider-search { flex:0 0 auto; flex-wrap:nowrap; }
+.provider-search input { width:205px; flex:0 0 205px; min-width:0; }
+.provider-toolbar :deep(.list-filter__tags) { grid-column:1 / -1; grid-row:2; justify-self:start; }
 .provider-page input { min-height:38px; padding:8px 11px; border:1px solid #dbe5e9; border-radius:9px; background:#fff; color:#29414d; font:inherit; font-size:12px; outline:none; }
 .provider-page input:focus { border-color:#42aa98; box-shadow:0 0 0 3px #e2f5ee; }
 .provider-page button:not(.page-action) { min-height:34px; padding:6px 12px; border:1px solid #d6e5e3; border-radius:9px; background:#f4faf8; color:#217c70; cursor:pointer; }
@@ -371,6 +403,8 @@ watch([page, pageSize], () => void load(), { immediate: true });
 .provider-status.is-off { color:#aa685c; }
 .provider-dialog { width:min(480px,100%); padding:24px; }
 .provider-dialog--wide { width:min(760px,100%); }
+.provider-section__header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+.provider-section__header h3 { margin:0; }
 .provider-dialog header,.provider-dialog footer { display:flex; justify-content:space-between; align-items:center; gap:12px; }
 .provider-dialog h2 { margin:0; font-size:18px; }
 .provider-dialog header button { font-size:20px; }
@@ -394,5 +428,11 @@ watch([page, pageSize], () => void load(), { immediate: true });
 .provider-connection small { display:block; margin-top:4px; overflow:hidden; text-overflow:ellipsis; }
 .provider-inline-form { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }
 .provider-inline-form input { flex:1; min-width:140px; }
-@media (max-width:560px) { .provider-hero { align-items:flex-start; flex-direction:column; } }
+@media (max-width:680px) {
+  .provider-hero { align-items:flex-start; flex-direction:column; }
+  .provider-toolbar { display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+  .provider-toolbar__actions { display:flex; width:100%; flex:1 1 100%; }
+  .provider-search { flex:1 1 250px; flex-wrap:wrap; }
+  .provider-search input { width:auto; flex:1 1 150px; }
+}
 </style>

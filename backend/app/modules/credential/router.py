@@ -6,6 +6,7 @@ import hmac
 import re
 import secrets
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -16,8 +17,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.list_filters import filter_expression
 from app.core.responses import success_response
-from app.db.models import AggregatedModel, ApiKey, Organization, Project, ProviderModel, User
+from app.db.models import (
+    AggregatedModel,
+    ApiKey,
+    Organization,
+    Project,
+    ProjectMember,
+    ProviderModel,
+    User,
+)
 from app.db.session import get_db
 from app.modules.identity.router import actor, require_platform
 from app.modules.routing.strategies import STRATEGIES
@@ -45,9 +55,20 @@ class KeySettings(BaseModel):
     tpm_limit: int | None = Field(default=None, ge=1)
     qps_limit: int | None = Field(default=None, ge=1)
     token_budget: int | None = Field(default=None, ge=1)
+    amount_budget: Decimal | None = Field(default=None, gt=0, lt=10000000000000000)
     budget_period: Literal["week", "month"] | None = None
     wait_mode: Literal["queue", "block"] = "block"
     max_wait_ms: int = Field(default=30000, ge=1000, le=300000)
+
+    @field_validator("amount_budget")
+    @classmethod
+    def round_budget(cls, value: Decimal | None) -> Decimal | None:
+        if value is None:
+            return None
+        rounded = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if rounded <= 0:
+            raise ValueError("金额上限至少为 0.01 元。")
+        return rounded
 
     @model_validator(mode="after")
     def validate_settings(self) -> KeySettings:
@@ -55,8 +76,9 @@ class KeySettings(BaseModel):
             raise ValueError("Key 名称不能为空。")
         if not self.aggregate_model_ids and not self.access_model_ids:
             raise ValueError("至少绑定一个聚合模型或接入模型。")
-        if (self.token_budget is None) != (self.budget_period is None):
-            raise ValueError("Token 用量与统计周期必须同时配置。")
+        if ((self.token_budget is not None or self.amount_budget is not None)
+                != (self.budget_period is not None)):
+            raise ValueError("用量上限与统计周期必须同时配置。")
         if self.expires_at is not None:
             if not future(self.expires_at):
                 raise ValueError("过期时间必须晚于当前时间。")
@@ -111,7 +133,8 @@ def serialize(item: ApiKey) -> dict:
         "expires_at": item.expires_at, "aggregate_model_ids": grants.get("aggregate_ids", []),
         "access_model_ids": grants.get("access_ids", []), "tpm_limit": item.tpm_limit,
         "qps_limit": item.qps_limit, "token_budget": item.token_budget,
-        "budget_period": item.budget_period, "wait_mode": item.wait_mode,
+        "amount_budget": item.amount_budget, "budget_period": item.budget_period,
+        "wait_mode": item.wait_mode,
         "max_wait_ms": item.max_wait_ms, "created_at": item.created_at,
     }
 
@@ -148,12 +171,20 @@ def validate_owner(db: Session, scope: str, payload: CreateKey) -> int | None:
                     or organization.status != 1):
                 raise HTTPException(422, "组织不存在或已停用。")
         return payload.organization_id
-    if (payload.project_id is None or payload.user_id is not None
-            or payload.organization_id is not None):
-        raise HTTPException(422, "项目 Key 只能指定项目，组织由项目自动继承。")
+    if payload.project_id is None or payload.organization_id is not None:
+        raise HTTPException(422, "项目 Key 必须指定项目，组织由项目自动继承。")
     project = db.get(Project, payload.project_id)
     if project is None or project.deleted_at is not None or project.status != 1:
         raise HTTPException(422, "项目不存在或已停用。")
+    if payload.user_id is not None:
+        owner = db.get(User, payload.user_id)
+        member = db.scalar(select(ProjectMember.id).where(
+            ProjectMember.project_id == project.id,
+            ProjectMember.user_id == payload.user_id, ProjectMember.status == 1,
+        ))
+        if (owner is None or owner.deleted_at is not None or owner.status != 1
+                or member is None):
+            raise HTTPException(422, "归属人必须是该项目的有效成员。")
     if project.organization_id is not None:
         organization = db.get(Organization, project.organization_id)
         if organization is None or organization.deleted_at is not None or organization.status != 1:
@@ -166,8 +197,8 @@ def apply_settings(item: ApiKey, settings: KeySettings) -> None:
     item.allowed_models = {
         "aggregate_ids": settings.aggregate_model_ids, "access_ids": settings.access_model_ids,
     }
-    for field in ("expires_at", "tpm_limit", "qps_limit", "token_budget", "budget_period",
-                  "wait_mode", "max_wait_ms"):
+    for field in ("expires_at", "tpm_limit", "qps_limit", "token_budget",
+                  "amount_budget", "budget_period", "wait_mode", "max_wait_ms"):
         setattr(item, field, getattr(settings, field))
 
 
@@ -240,16 +271,38 @@ def no_store(response: Response) -> None:
 
 
 def list_keys(scope: str, db: Session, page: int, page_size: int,
-              owner_id: int | None) -> dict:
+              owner_id: int | None, filters: str | None = None) -> dict:
     statement = select(ApiKey).where(ApiKey.scope_type == scope, ApiKey.deleted_at.is_(None))
     if owner_id is not None:
         field = ApiKey.user_id if scope == "user" else ApiKey.project_id
         statement = statement.where(field == owner_id)
+    if filters:
+        owner_field = ApiKey.user_id if scope == "user" else ApiKey.project_id
+        expression = filter_expression(filters, {
+            "id": (ApiKey.id, "number"), "name": (ApiKey.name, "text"),
+            "key_prefix": (ApiKey.key_prefix, "text"),
+            "owner_id": (owner_field, "number"),
+            "tpm_limit": (ApiKey.tpm_limit, "number"),
+            "qps_limit": (ApiKey.qps_limit, "number"),
+            "token_budget": (ApiKey.token_budget, "number"),
+            "amount_budget": (ApiKey.amount_budget, "decimal"),
+            "budget_period": (ApiKey.budget_period, "select", {"week", "month"}),
+            "wait_mode": (ApiKey.wait_mode, "select", {"queue", "block"}),
+            "status": (ApiKey.status, "select", {"0", "1"}),
+        })
+        if expression is not None:
+            statement = statement.where(expression)
     total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
     items = db.scalars(statement.order_by(ApiKey.id.desc()).offset(
         (page - 1) * page_size).limit(page_size)).all()
+    owner_names = {
+        user.id: user.username for user in db.scalars(select(User).where(
+            User.id.in_([item.user_id for item in items if item.user_id is not None]),
+        ))
+    } if scope == "project" and items else {}
     return success_response({
-        "items": [serialize(item) for item in items], "total": total,
+        "items": [{**serialize(item), "owner_name": owner_names.get(item.user_id)}
+                  for item in items], "total": total,
         "page": page, "page_size": page_size,
     }).model_dump(mode="json")
 
@@ -305,7 +358,8 @@ def set_status(scope: str, key_id: int, payload: StatusPayload, db: Session) -> 
             name=item.name, aggregate_model_ids=grants.get("aggregate_ids", []),
             access_model_ids=grants.get("access_ids", []), expires_at=item.expires_at,
             tpm_limit=item.tpm_limit, qps_limit=item.qps_limit, token_budget=item.token_budget,
-            budget_period=item.budget_period, wait_mode=item.wait_mode,
+            amount_budget=item.amount_budget, budget_period=item.budget_period,
+            wait_mode=item.wait_mode,
             max_wait_ms=item.max_wait_ms,
         )
         validate_models(db, settings)
@@ -320,18 +374,20 @@ def set_status(scope: str, key_id: int, payload: StatusPayload, db: Session) -> 
 
 @router.get("/user-keys")
 def list_user_keys(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
-                   user_id: int | None = None, db: Session = Depends(get_db),
+                   user_id: int | None = None, filters: str | None = Query(None, max_length=4096),
+                   db: Session = Depends(get_db),
                    user: User = Depends(actor)) -> dict:
     require_platform(user)
-    return list_keys("user", db, page, page_size, user_id)
+    return list_keys("user", db, page, page_size, user_id, filters)
 
 
 @router.get("/project-keys")
 def list_project_keys(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
-                      project_id: int | None = None, db: Session = Depends(get_db),
+                      project_id: int | None = None, filters: str | None = Query(None, max_length=4096),
+                      db: Session = Depends(get_db),
                       user: User = Depends(actor)) -> dict:
     require_platform(user)
-    return list_keys("project", db, page, page_size, project_id)
+    return list_keys("project", db, page, page_size, project_id, filters)
 
 
 @router.post("/user-keys", status_code=201)

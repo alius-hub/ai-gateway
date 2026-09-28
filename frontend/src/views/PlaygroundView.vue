@@ -2,6 +2,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 
 import AppSelect from "@/AppSelect.vue";
+import AppFilterTags from "@/AppFilterTags.vue";
+import AppListFilter from "@/AppListFilter.vue";
 import { listAccessModels } from "@/api/models";
 import { debugChat, deleteDebugHistory, executeDebug, getDebugHistory, listDebugHistory, type ChatMessage,
   type ChatRequest, type ChatResult, type DebugHistoryDetail, type DebugHistoryItem,
@@ -10,6 +12,8 @@ import { listProtocols } from "@/api/providers";
 import { listAggregates, type AggregateItem } from "@/api/workflows";
 import { useAuthStore } from "@/stores/auth";
 import type { AccessModelItem } from "@/types/resource";
+import type { FilterGroup } from "@/types/filter";
+import { listFilterFields } from "@/utils/listFilterFields";
 import { showToast } from "@/utils/toast";
 
 const auth = useAuthStore();
@@ -45,6 +49,7 @@ const controller = ref<AbortController | null>(null);
 const historyItems = ref<DebugHistoryItem[]>([]);
 const historyPage = ref(1);
 const historyTotal = ref(0);
+const historyFilters = ref<FilterGroup>({ mode: "and", conditions: [] });
 const historyLoading = ref(false);
 const detailLoading = ref(false);
 const selectedRecord = ref<DebugHistoryDetail | null>(null);
@@ -68,7 +73,7 @@ async function loadHistory(showLatest = false) {
   historyLoading.value = true;
   try {
     if (showLatest) historyPage.value = 1;
-    const page = await listDebugHistory(historyPage.value);
+    const page = await listDebugHistory(historyPage.value, 20, historyFilters.value);
     if (!historyOpen.value) return;
     historyItems.value = page.items;
     historyTotal.value = page.total;
@@ -540,9 +545,11 @@ onUnmounted(() => {
           <header class="history-dialog__header">
             <div><h2>{{ selectedRecord ? `调试详情 #${selectedRecord.id}` : "历史调试记录" }}</h2>
               <p>{{ selectedRecord ? `${selectedRecord.model_code} · ${selectedRecord.protocol} · ${selectedRecord.stream ? "流式" : "非流式"}` : "仅展示当前账号记录，敏感请求头已脱敏。" }}</p></div>
+            <AppFilterTags v-if="!selectedRecord" :fields="listFilterFields.history" :model-value="historyFilters" @apply="historyFilters = $event; loadHistory(true)" />
             <div class="header-actions">
               <button v-if="selectedRecord" type="button" class="secondary" @click="selectedRecord = null">返回列表</button>
               <button v-else type="button" class="secondary" :disabled="historyLoading" @click="loadHistory()">刷新</button>
+              <AppListFilter v-if="!selectedRecord" :fields="listFilterFields.history" :model-value="historyFilters" hide-tags @apply="historyFilters = $event; loadHistory(true)" />
               <button class="secondary close-button" type="button" aria-label="关闭历史调试记录" @click="closeHistory">×</button>
             </div>
           </header>
@@ -638,11 +645,11 @@ textarea{resize:vertical;line-height:1.5}.settings-pair{display:grid;grid-templa
 .stream-panel summary{width:fit-content;margin-bottom:12px;color:#173943;font-size:16px;font-weight:650;cursor:pointer}
 .stream-panel summary:focus-visible{outline:2px solid #70dbc9;outline-offset:3px}
 .live-answer{white-space:pre-wrap;overflow-wrap:anywhere;color:#173943}
-.header-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-shrink:0}
+.header-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:10px;flex-shrink:1;min-width:0;max-width:100%}
 .history-trigger{display:grid;place-items:center;width:38px;height:38px;padding:8px}
 .history-trigger svg{width:20px;height:20px}
 .history-dialog{width:90vw;height:90dvh;max-height:90dvh;display:flex;flex-direction:column;overflow:hidden}
-.history-dialog__header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 24px;border-bottom:1px solid #e2e8f0}
+.history-dialog__header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:20px 24px;border-bottom:1px solid #e2e8f0}
 .history-dialog__header h2{margin:0 0 6px;font-size:18px}
 .close-button{font-size:24px;line-height:1;padding:4px 10px}
 .history-dialog__body{display:flex;flex-direction:column;gap:16px;min-height:0;flex:1;overflow:auto;padding:20px 24px}

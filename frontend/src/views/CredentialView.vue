@@ -3,16 +3,20 @@ import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import AppPagination from "@/AppPagination.vue";
+import AppFilterTags from "@/AppFilterTags.vue";
+import AppListFilter from "@/AppListFilter.vue";
 import AppSelect from "@/AppSelect.vue";
 import {
   createCredential, listCredentials, revealCredential, rotateCredential, setCredentialStatus,
   updateCredential, type CredentialItem, type CredentialSecret, type CredentialSettings, type KeyScope,
 } from "@/api/credentials";
-import { listIdentity, type IdentityRecord } from "@/api/identity";
+import { listIdentity, listMembers, type IdentityRecord } from "@/api/identity";
 import { listAccessModels } from "@/api/models";
 import { listAggregates, type AggregateItem } from "@/api/workflows";
 import { useAuthStore } from "@/stores/auth";
 import type { AccessModelItem } from "@/types/resource";
+import type { FilterGroup } from "@/types/filter";
+import { listFilterFields } from "@/utils/listFilterFields";
 import { buildCurlExample, preferredShell, type CurlShell } from "@/utils/credentialExample";
 import { showToast } from "@/utils/toast";
 
@@ -28,11 +32,15 @@ const accessModels = ref<AccessModelItem[]>([]);
 const page = ref(1);
 const pageSize = ref(20);
 const total = ref(0);
+const filters = ref<FilterGroup>({ mode: "and", conditions: [] });
 const loading = ref(false);
 const busy = ref(false);
 const editing = ref<CredentialItem | null>(null);
 const formOpen = ref(false);
 const ownerId = ref<number | null>(null);
+const projectOwnerId = ref<number | "">("");
+const projectMembers = ref<IdentityRecord[]>([]);
+const membersLoading = ref(false);
 const customPrefix = ref("");
 const rotatePrefix = ref("");
 const secret = ref("");
@@ -49,11 +57,12 @@ const example = computed(() => {
     : null;
 });
 let requestId = 0;
+let membersRequestId = 0;
 
 function emptyForm(): CredentialSettings {
   return {
     name: "", aggregate_model_ids: [], access_model_ids: [],
-    expires_at: null, tpm_limit: null, qps_limit: null, token_budget: null,
+    expires_at: null, tpm_limit: null, qps_limit: null, token_budget: null, amount_budget: null,
     budget_period: null, wait_mode: "block", max_wait_ms: 30000,
   };
 }
@@ -70,7 +79,7 @@ async function load() {
   rows.value = [];
   loading.value = true;
   try {
-    const result = await listCredentials(currentScope, page.value, pageSize.value);
+    const result = await listCredentials(currentScope, page.value, pageSize.value, filters.value);
     if (id !== requestId || currentScope !== scope.value) return;
     rows.value = result.items;
     total.value = result.total;
@@ -117,13 +126,15 @@ async function fetchAllModels(): Promise<AccessModelItem[]> {
 
 function openForm(item: CredentialItem | null = null) {
   editing.value = item;
-  ownerId.value = item?.user_id ?? item?.project_id ?? null;
+  ownerId.value = scope.value === "project" ? item?.project_id ?? null : item?.user_id ?? null;
+  projectOwnerId.value = "";
+  projectMembers.value = [];
   customPrefix.value = "";
   form.value = item ? {
     name: item.name, aggregate_model_ids: [...item.aggregate_model_ids],
     access_model_ids: [...item.access_model_ids], expires_at: item.expires_at,
     tpm_limit: item.tpm_limit, qps_limit: item.qps_limit,
-    token_budget: item.token_budget, budget_period: item.budget_period,
+    token_budget: item.token_budget, amount_budget: item.amount_budget, budget_period: item.budget_period,
     wait_mode: item.wait_mode, max_wait_ms: item.max_wait_ms,
   } : emptyForm();
   formOpen.value = true;
@@ -195,6 +206,8 @@ async function save() {
       const result = await createCredential(scope.value, {
         ...payload, custom_prefix: customPrefix.value || null,
         [scope.value === "user" ? "user_id" : "project_id"]: ownerId.value!,
+        ...(scope.value === "project" && projectOwnerId.value !== ""
+          ? { user_id: Number(projectOwnerId.value) } : {}),
       });
       showSecret(result);
     }
@@ -250,13 +263,39 @@ async function copyExample() {
 }
 
 function ownerName(item: CredentialItem): string {
-  const owner = owners.value.find((candidate) => candidate.id === (item.user_id ?? item.project_id));
-  return owner?.name ?? owner?.username ?? `#${item.user_id ?? item.project_id}`;
+  const id = scope.value === "project" ? item.project_id : item.user_id;
+  const owner = owners.value.find((candidate) => candidate.id === id);
+  return owner?.name ?? owner?.username ?? `#${id}`;
 }
+
+watch(ownerId, async (projectId) => {
+  const id = ++membersRequestId;
+  projectOwnerId.value = "";
+  projectMembers.value = [];
+  membersLoading.value = false;
+  if (scope.value !== "project" || !formOpen.value || editing.value || projectId === null) return;
+  membersLoading.value = true;
+  try {
+    const members = await listMembers("projects", projectId);
+    if (id === membersRequestId && formOpen.value && ownerId.value === projectId) {
+      projectMembers.value = members.filter((member) =>
+        member.status === 1 && member.member_status === 1);
+    }
+  } catch (reason) {
+    if (id === membersRequestId) showToast("error", message(reason));
+  } finally {
+    if (id === membersRequestId) membersLoading.value = false;
+  }
+});
 
 watch([scope, page, pageSize], () => void load(), { immediate: true });
 watch(scope, () => {
+  ++membersRequestId;
+  projectOwnerId.value = "";
+  projectMembers.value = [];
+  membersLoading.value = false;
   page.value = 1;
+  filters.value = { mode: "and", conditions: [] };
   total.value = 0;
   owners.value = [];
   aggregates.value = [];
@@ -266,6 +305,12 @@ watch(scope, () => {
   closeSecret();
   if (admin.value) void loadChoices();
 }, { immediate: true });
+
+function applyFilters(value: FilterGroup) {
+  filters.value = value;
+  if (page.value !== 1) page.value = 1;
+  else void load();
+}
 </script>
 
 <template>
@@ -278,13 +323,20 @@ watch(scope, () => {
       Key 鉴权、TPM/QPS、周/月额度及排队位置查询已接入网关；聊天支持 OpenAI、Claude、Gemini 文本协议及 SSE，其他模型接口需接入兼容相应路径的供应商。
     </div>
     <div v-if="admin" class="page-card credential-list">
-      <div class="credential-toolbar"><h2>{{ title }}列表 <small>共 {{ total }} 条</small></h2><button type="button" @click="load">刷新</button></div>
+      <div class="credential-toolbar"><h2>{{ title }}列表 <small>共 {{ total }} 条</small></h2>
+        <AppFilterTags :fields="listFilterFields[scope === 'user' ? 'user-keys' : 'project-keys']" :model-value="filters" @apply="applyFilters" />
+        <div class="app-list-toolbar-actions">
+          <button type="button" @click="load">刷新</button>
+          <AppListFilter :fields="listFilterFields[scope === 'user' ? 'user-keys' : 'project-keys']" :model-value="filters" hide-tags @apply="applyFilters" />
+        </div>
+      </div>
       <div class="credential-scroll">
         <table class="resource-table">
-          <thead><tr><th>名称</th><th>{{ scope === "user" ? "用户" : "项目" }}</th><th>前缀</th><th>模型绑定</th><th>TPM / QPS</th><th>周期额度</th><th>等待方式</th><th>状态</th><th>操作</th></tr></thead>
+          <thead><tr><th>名称</th><th>{{ scope === "user" ? "用户" : "项目" }}</th><th v-if="scope === 'project'">归属人</th><th>前缀</th><th>模型绑定</th><th>TPM / QPS</th><th>周期额度</th><th>等待方式</th><th>状态</th><th>操作</th></tr></thead>
           <tbody>
             <tr v-for="item in rows" :key="item.id">
               <td>{{ item.name }}</td><td>{{ ownerName(item) }}</td>
+              <td v-if="scope === 'project'">{{ item.owner_name ?? (item.user_id ? `#${item.user_id}` : "未指定") }}</td>
               <td><span class="credential-prefix">
                 <code>{{ item.key_prefix }}…</code>
                 <button class="credential-eye" type="button" :disabled="busy || viewing || !item.revealable"
@@ -299,7 +351,7 @@ watch(scope, () => {
               </span></td>
               <td>聚合 {{ item.aggregate_model_ids.length }} / 直连 {{ item.access_model_ids.length }}</td>
               <td>{{ item.tpm_limit ?? "不限" }} / {{ item.qps_limit ?? "不限" }}</td>
-              <td>{{ item.token_budget ? `${item.token_budget} / ${item.budget_period === "week" ? "周" : "月"}` : "不限" }}</td>
+              <td>{{ item.token_budget ? `${item.token_budget} Token` : "不限 Token" }} / {{ item.amount_budget != null ? `¥${Number(item.amount_budget).toFixed(2)}` : "不限金额" }}{{ item.budget_period ? ` / ${item.budget_period === "week" ? "周" : "月"}` : "" }}</td>
               <td>{{ item.wait_mode === "queue" ? "排队" : "阻塞" }}</td>
               <td>{{ item.status === 1 ? "启用" : "停用" }}</td>
               <td class="credential-actions">
@@ -308,7 +360,7 @@ watch(scope, () => {
                 <button type="button" :disabled="busy" :class="{ danger: item.status === 1 }" @click="pending = { item, action: 'status' }">{{ item.status === 1 ? "停用" : "启用" }}</button>
               </td>
             </tr>
-            <tr v-if="!rows.length"><td colspan="9" class="credential-empty">{{ loading ? "正在加载..." : "暂无 Key" }}</td></tr>
+            <tr v-if="!rows.length"><td :colspan="scope === 'project' ? 10 : 9" class="credential-empty">{{ loading ? "正在加载..." : "暂无 Key" }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -325,6 +377,12 @@ watch(scope, () => {
             <AppSelect v-model="ownerId" :options="owners.map((item) => ({ label: `${item.name ?? item.username} (#${item.id})`, value: item.id }))" placeholder="请选择" />
           </label>
           <p v-else>归属：{{ ownerName(editing) }}。如需更改归属，请重新创建 Key。</p>
+          <label v-if="scope === 'project' && !editing">归属人（选填，仅项目成员）
+            <AppSelect v-model="projectOwnerId" :disabled="ownerId === null || membersLoading"
+              :options="[{ label: '不指定归属人', value: '' }, ...projectMembers.map((member) => ({ label: `${member.username} (#${member.id})`, value: member.id }))]"
+              :placeholder="membersLoading ? '正在加载项目成员...' : '不指定归属人'" />
+          </label>
+          <p v-if="scope === 'project' && editing">归属人：{{ editing.owner_name ?? (editing.user_id ? `#${editing.user_id}` : "未指定") }}。如需更改，请重新创建 Key。</p>
           <label v-if="!editing">自定义 Key 前缀（可选）
             <input v-model.trim="customPrefix" maxlength="20" placeholder="留空使用 agw_" pattern="[A-Za-z][A-Za-z0-9_-]{1,19}" title="2-20 位，以字母开头，仅含字母、数字、下划线或连字符" />
             <span>例如输入 team 会生成 team_ 开头的 Key；设置后可在轮换时修改。</span>
@@ -353,13 +411,14 @@ watch(scope, () => {
           <div class="credential-grid">
             <label>TPM（空为不限）<input v-model.number="form.tpm_limit" type="number" min="1" placeholder="不限" @change="form.tpm_limit ||= null" /></label>
             <label>QPS（空为不限）<input v-model.number="form.qps_limit" type="number" min="1" placeholder="不限" @change="form.qps_limit ||= null" /></label>
-            <label>周期 Token 上限<input v-model.number="form.token_budget" type="number" min="1" placeholder="不限" @change="form.token_budget ||= null; if (!form.token_budget) form.budget_period = null" /></label>
+            <label>周期 Token 上限<input v-model.number="form.token_budget" type="number" min="1" placeholder="不限" @change="form.token_budget ||= null; if (!form.token_budget && !form.amount_budget) form.budget_period = null" /></label>
+            <label>周期金额上限（人民币元）<input v-model.number="form.amount_budget" type="number" min="0.01" step="0.01" placeholder="不限" @change="form.amount_budget ||= null; if (!form.token_budget && !form.amount_budget) form.budget_period = null" /></label>
             <label>统计周期<AppSelect :model-value="form.budget_period ?? ''" :options="[{ label: '不限制', value: '' }, { label: '自然周', value: 'week' }, { label: '自然月', value: 'month' }]" @update:model-value="form.budget_period = $event ? ($event as 'week' | 'month') : null" /></label>
             <label>等待模式<AppSelect v-model="form.wait_mode" :options="[{ label: '阻塞等待', value: 'block' }, { label: '排队返回票据', value: 'queue' }]" /></label>
             <label>最大等待时间（毫秒）<input v-model.number="form.max_wait_ms" type="number" min="1000" max="300000" required /></label>
             <label>过期时间（可选，UTC）<input :value="form.expires_at?.slice(0, 16) ?? ''" type="datetime-local" @change="form.expires_at = ($event.target as HTMLInputElement).value ? `${($event.target as HTMLInputElement).value}:00Z` : null" /></label>
           </div>
-          <p>排队模式返回票据，可查询位置并携票据重试相同请求；阻塞模式达到等待上限返回 429。周/月额度按 UTC 自然周期统计。</p>
+          <p>排队模式返回票据，可查询位置并携票据重试相同请求；阻塞模式达到等待上限返回 429。周/月额度按 UTC 自然周期统计；一个项目可创建多个 Key，共享项目累计金额预算。</p>
         </div>
         <footer><button type="button" :disabled="busy" @click="formOpen = false">取消</button><button type="submit" :disabled="busy">{{ busy ? "保存中..." : "保存" }}</button></footer>
       </form>
@@ -407,7 +466,7 @@ watch(scope, () => {
 .credential-hero p,.credential-fields p,.credential-notice { color:#697f8a; font-size:12px; }
 .credential-notice { background:#fff9e9; }
 .credential-list { padding:0; overflow:hidden; }
-.credential-toolbar { padding:22px 24px; }
+.credential-toolbar { padding:22px 24px; flex-wrap:wrap; }
 .credential-toolbar h2 { margin:0; font-size:16px; }
 .credential-toolbar small { font-size:12px; color:#8a9ca8; }
 .credential-scroll { overflow-x:auto; }

@@ -637,6 +637,66 @@ a {
   box-shadow: 0 20px 60px rgba(13, 32, 48, 0.2);
 }
 
+.app-control-input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid #dbe5e9;
+  border-radius: 9px;
+  outline: none;
+  background: #fff;
+  color: #29414d;
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.app-control-input::placeholder { color: #9aaab3; }
+.app-control-input:hover { border-color: #a8cfc7; }
+.app-control-input:focus { border-color: #42aa98; box-shadow: 0 0 0 3px #e2f5ee; }
+
+.app-control-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 7px 14px;
+  border: 1px solid #d6e5e3;
+  border-radius: 9px;
+  background: #fff;
+  color: #34505a;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.2s;
+}
+
+.app-control-button:hover:not(:disabled) { border-color: #85c8b9; background: #f2faf7; color: #217c70; }
+.app-control-button:focus-visible { outline: 2px solid #42aa98; outline-offset: 2px; }
+.app-control-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.app-control-button--soft { border-color: #d6e9e3; background: #f2faf7; color: #217c70; }
+.app-control-button--primary { border-color: #217c70; background: #217c70; color: #fff; }
+.app-control-button--primary:hover:not(:disabled) { border-color: #176d62; background: #176d62; color: #fff; }
+.app-control-button--icon { width: 34px; height: 34px; min-height: 34px; padding: 0; border-color: transparent; background: transparent; color: #78909b; font-size: 20px; font-weight: 400; line-height: 1; }
+.app-control-button--icon:hover:not(:disabled) { border-color: #d6e9e3; background: #f2faf7; color: #217c70; }
+.app-control-button--add { border-style: dashed; border-color: #85c8b9; background: #f2faf7; color: #217c70; }
+.app-control-button--add:hover:not(:disabled) { border-color: #42aa98; background: #e2f5ee; }
+
+.app-list-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+}
+
 .layout-menu a:focus-visible,
 .layout-menu button:focus-visible,
 .sidebar-collapse:focus-visible,

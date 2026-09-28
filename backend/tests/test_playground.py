@@ -1,3 +1,4 @@
+import json
 import socket
 import unittest
 from types import SimpleNamespace
@@ -159,6 +160,25 @@ class PlaygroundTest(unittest.TestCase):
         self.db.get(ProviderModel, 1).status = 0
         self.db.commit()
         self.assertEqual(self.client.post(self.url, json=self.payload(), headers=self.admin).status_code, 422)
+
+    def test_model_list_filters_provider_name_and_aggregate(self):
+        path = "/api/admin/v1/access-models"
+        filters = json.dumps({"mode": "and", "conditions": [
+            {"field": "provider_name", "operator": "contains", "value": "Test"},
+            {"field": "id", "operator": "eq", "value": "1"},
+        ]})
+        result = self.client.get(path, headers=self.admin,
+                                 params={"filters": filters, "page_size": 1})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["data"]["total"], 1)
+        self.assertEqual(result.json()["data"]["items"][0]["id"], 1)
+        aggregate = self.client.get("/api/admin/v1/aggregate-models", headers=self.admin,
+                                    params={"filters": json.dumps({"mode": "and", "conditions": [
+                                        {"field": "aggregate_model_code", "operator": "eq",
+                                         "value": "agg"},
+                                    ]})})
+        self.assertEqual(aggregate.status_code, 200, aggregate.text)
+        self.assertEqual(aggregate.json()["data"]["total"], 1)
 
     def test_custom_connection_and_private_address_rejection(self):
         original_client = httpx.AsyncClient

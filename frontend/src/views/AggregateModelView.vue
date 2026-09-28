@@ -2,21 +2,41 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 
+import AppPagination from "@/AppPagination.vue";
 import AppSelect from "@/AppSelect.vue";
+import AppFilterTags from "@/AppFilterTags.vue";
+import AppListFilter from "@/AppListFilter.vue";
 import { listAccessModels } from "@/api/models";
-import { createAggregate, listAggregates, listBuiltinStrategies, updateAggregate,
-  type AggregateItem, type AggregatePayload, type BuiltinStrategy, type StrategyCode } from "@/api/workflows";
+import { createAggregate, getAggregateNodes, listAggregates, listBuiltinStrategies, probeAggregateNodes, updateAggregate,
+  type AggregateItem, type AggregateNodes, type AggregatePayload, type AggregateProbeResult, type BuiltinStrategy, type StrategyCode } from "@/api/workflows";
 import { useAuthStore } from "@/stores/auth";
 import type { AccessModelItem } from "@/types/resource";
+import type { FilterGroup } from "@/types/filter";
+import { listFilterFields } from "@/utils/listFilterFields";
 import { showToast } from "@/utils/toast";
 
 const auth = useAuthStore();
 const admin = computed(() => auth.userInfo?.roles.includes("platform_admin") ?? false);
 const records = ref<AggregateItem[]>([]);
+const page = ref(1);
+const pageSize = ref(20);
+const total = ref(0);
+const keyword = ref("");
+const appliedKeyword = ref("");
+const loading = ref(false);
+const filters = ref<FilterGroup>({ mode: "and", conditions: [] });
 const strategies = ref<BuiltinStrategy[]>([]);
 const models = ref<AccessModelItem[]>([]);
 const editing = ref<AggregateItem | null>(null);
 const confirmTarget = ref<AggregateItem | null>(null);
+const detailTarget = ref<AggregateItem | null>(null);
+const detail = ref<AggregateNodes | null>(null);
+const detailLoading = ref(false);
+const selectedNodes = ref<number[]>([]);
+const probeMode = ref<"actual" | "network">("network");
+const probeBusy = ref(false);
+const probeResults = ref<Record<number, AggregateProbeResult>>({});
+watch(probeMode, () => { probeResults.value = {}; });
 const open = ref(false);
 const busy = ref(false);
 const form = ref<AggregatePayload>(empty());
@@ -26,6 +46,9 @@ const fallbackSources = [
   { label: "聚合节点（当前候选）", value: "candidates" },
   { label: "模型管理（全部同类型）", value: "catalog" },
 ];
+let requestId = 0;
+let detailRequestId = 0;
+let probeRequestId = 0;
 const strategyOptions = computed(() => strategies.value.map((strategy) => ({ label: strategy.name, value: strategy.code })));
 const modelOptions = computed(() => models.value.filter((model) => model.model_type === form.value.model_type)
   .map((model) => ({
@@ -37,6 +60,7 @@ const fallbackOptions = computed(() => fallbackSource.value === "candidates"
 function empty(): AggregatePayload {
   return { aggregate_model_code: "", public_model_name: "", model_type: "llm",
     default_routing_strategy: "single", routing_model_ids: [0], fallback_model_id: null,
+    retry_on_failure: false,
     description: null, status: 0 };
 }
 function isBuiltin(code: string): code is StrategyCode {
@@ -47,12 +71,32 @@ function errorMessage(error: unknown) {
   return typeof detail === "string" ? detail : error instanceof Error ? error.message : "操作失败";
 }
 async function load() {
+  const id = ++requestId;
+  loading.value = true;
   records.value = [];
+  total.value = 0;
   try {
-    const [aggregates, builtin, first] = await Promise.all([
-      listAggregates(), listBuiltinStrategies(), listAccessModels({ page: 1, page_size: 100 }),
-    ]);
+    const aggregates = await listAggregates({
+      page: page.value, page_size: pageSize.value, keyword: appliedKeyword.value, filters: filters.value,
+    });
+    if (id !== requestId) return;
+    total.value = aggregates.total;
+    if (page.value > 1 && page.value > Math.ceil(aggregates.total / pageSize.value)) {
+      page.value = Math.max(1, Math.ceil(aggregates.total / pageSize.value));
+      return;
+    }
     records.value = aggregates.items;
+  } catch (error) {
+    if (id === requestId) showToast("error", errorMessage(error));
+  } finally {
+    if (id === requestId) loading.value = false;
+  }
+}
+async function loadChoices() {
+  try {
+    const [builtin, first] = await Promise.all([
+      listBuiltinStrategies(), listAccessModels({ page: 1, page_size: 100 }),
+    ]);
     strategies.value = builtin.items;
     const all = [...first.items];
     for (let page = 2; all.length < first.total; page++) {
@@ -63,6 +107,16 @@ async function load() {
     models.value = all;
   } catch (error) { showToast("error", errorMessage(error)); }
 }
+function search() {
+  appliedKeyword.value = keyword.value.trim();
+  if (page.value === 1) void load();
+  else page.value = 1;
+}
+function applyFilters(value: FilterGroup) {
+  filters.value = value;
+  if (page.value === 1) void load();
+  else page.value = 1;
+}
 function edit(item: AggregateItem | null = null) {
   editing.value = item;
   form.value = item ? {
@@ -71,16 +125,74 @@ function edit(item: AggregateItem | null = null) {
     default_routing_strategy: isBuiltin(item.default_routing_strategy) ? item.default_routing_strategy : "single",
     routing_model_ids: item.routing_model_ids.length ? [...item.routing_model_ids] : [0],
     fallback_model_id: item.fallback_model_id,
+    retry_on_failure: item.retry_on_failure,
     description: item.description, status: item.status,
   } : empty();
   fallbackSource.value = item?.fallback_model_id && !form.value.routing_model_ids.includes(item.fallback_model_id)
     ? "catalog" : "candidates";
   open.value = true;
 }
+function closeDetail() {
+  detailRequestId++;
+  probeRequestId++;
+  detailTarget.value = null;
+  detail.value = null;
+  detailLoading.value = false;
+  selectedNodes.value = [];
+  probeResults.value = {};
+  probeBusy.value = false;
+}
+async function showDetail(item: AggregateItem) {
+  const id = ++detailRequestId;
+  probeRequestId++;
+  detailTarget.value = item;
+  detail.value = null;
+  detailLoading.value = true;
+  selectedNodes.value = [];
+  probeResults.value = {};
+  probeBusy.value = false;
+  try {
+    const result = await getAggregateNodes(item.id);
+    if (id === detailRequestId) detail.value = result;
+  } catch (error) {
+    if (id === detailRequestId) showToast("error", errorMessage(error));
+  } finally {
+    if (id === detailRequestId) detailLoading.value = false;
+  }
+}
+function toggleAllNodes() {
+  if (!detail.value || probeBusy.value) return;
+  selectedNodes.value = selectedNodes.value.length === detail.value.nodes.length
+    ? [] : detail.value.nodes.map((node) => node.model_id);
+}
+async function checkNodes() {
+  if (!detailTarget.value || !selectedNodes.value.length || probeBusy.value) return;
+  const id = ++probeRequestId;
+  const targetId = detailTarget.value.id;
+  probeBusy.value = true;
+  probeResults.value = {};
+  try {
+    const { results } = await probeAggregateNodes(targetId, [...selectedNodes.value], probeMode.value);
+    if (id === probeRequestId && detailTarget.value?.id === targetId) {
+      probeResults.value = Object.fromEntries(results.map((item) => [item.model_id, item]));
+    }
+  } catch (error) {
+    if (id === probeRequestId) showToast("error", errorMessage(error));
+  } finally {
+    if (id === probeRequestId) probeBusy.value = false;
+  }
+}
+function nodeStatus(status: string) {
+  return { available: "可用", cooldown: "退避中", disabled: "已停用", missing: "模型不存在" }[status] ?? status;
+}
+function nodeRole(role: string) {
+  return { candidate: "候选", fallback: "兜底", candidate_and_fallback: "候选 / 兜底" }[role] ?? role;
+}
 function setStrategy(value: string | number) {
   const code = String(value);
   if (!isBuiltin(code)) return;
   form.value.default_routing_strategy = code;
+  if (code === "single") form.value.retry_on_failure = false;
   form.value.routing_model_ids = code === "single" ? [0] : [0, 0];
 }
 function resetModelsForType() {
@@ -119,6 +231,7 @@ async function toggle(item: AggregateItem) {
       aggregate_model_code: item.aggregate_model_code, public_model_name: item.public_model_name,
       model_type: item.model_type, default_routing_strategy: item.default_routing_strategy,
       routing_model_ids: item.routing_model_ids, fallback_model_id: item.fallback_model_id,
+      retry_on_failure: item.retry_on_failure,
       description: item.description,
       status: item.status === 1 ? 0 : 1,
     });
@@ -132,17 +245,34 @@ async function confirmStop() {
   const target = confirmTarget.value;
   if (target && await toggle(target)) confirmTarget.value = null;
 }
-onMounted(() => { void load(); });
+watch(page, () => void load(), { immediate: true });
+watch(pageSize, () => {
+  if (page.value === 1) void load();
+  else page.value = 1;
+});
+onMounted(() => { void loadChoices(); });
 </script>
 
 <template>
   <div class="page-stack">
     <div class="page-card">
       <div class="aggregate-heading">
-        <div><h2>聚合模型</h2><p>直接选择内置路由策略和接入模型。当前仅保存管理配置，真实网关发布与授权尚未接通。</p></div>
-        <button v-if="admin" class="page-action" type="button" @click="edit()">新建聚合模型</button>
+        <div><h2>聚合模型</h2><p>选择内置路由策略和接入模型，并按需开启请求失败后的节点切换。</p></div>
+        <div class="app-list-toolbar-actions">
+          <form class="aggregate-search" @submit.prevent="search">
+            <input v-model="keyword" class="app-control-input" aria-label="搜索聚合模型" placeholder="按对外模型名或聚合编码搜索" />
+            <button class="app-control-button" type="submit" :disabled="loading">查询</button>
+          </form>
+          <button v-if="admin" class="page-action" type="button" @click="edit()">新建聚合模型</button>
+          <AppListFilter :fields="listFilterFields['aggregate-models']" :model-value="filters" hide-tags @apply="applyFilters" />
+        </div>
+        <AppFilterTags :fields="listFilterFields['aggregate-models']" :model-value="filters" @apply="applyFilters" />
       </div>
-      <div v-if="!records.length" class="aggregate-empty">暂无聚合模型。请先在 <RouterLink to="/models">模型管理</RouterLink> 配置接入模型。</div>
+      <div v-if="!records.length" class="aggregate-empty">
+        <template v-if="loading">正在加载数据...</template>
+        <template v-else-if="appliedKeyword || filters.conditions.length">暂无匹配记录</template>
+        <template v-else>暂无聚合模型。请先在 <RouterLink to="/models">模型管理</RouterLink> 配置接入模型。</template>
+      </div>
       <div v-else class="aggregate-table-wrap">
         <table><thead><tr><th>对外模型名</th><th>聚合编码</th><th>类型</th><th>路由策略</th><th>候选模型</th><th>兜底模型</th><th>配置状态</th><th>操作</th></tr></thead>
           <tbody><tr v-for="item in records" :key="item.id">
@@ -151,7 +281,8 @@ onMounted(() => { void load(); });
             <td>{{ item.routing_model_ids.length ? item.routing_model_ids.map((id) => models.find((model) => model.id === id)?.access_model_code ?? `#${id}`).join("、") : "待转换" }}</td>
             <td>{{ item.fallback_model_id ? models.find((model) => model.id === item.fallback_model_id)?.access_model_code ?? `#${item.fallback_model_id}` : "未配置" }}</td>
             <td>{{ item.status === 1 ? "已启用配置" : "已停用" }}</td>
-            <td><button v-if="admin" type="button" @click="edit(item)">编辑</button>
+            <td><button type="button" @click="showDetail(item)">详情</button>
+              <button v-if="admin" type="button" @click="edit(item)">编辑</button>
               <button v-if="admin && isBuiltin(item.default_routing_strategy)" type="button"
                 :class="{ danger: item.status === 1 }" :disabled="busy"
                 @click="item.status === 1 ? (confirmTarget = item) : toggle(item)">{{ item.status === 1 ? "停用" : "启用" }}</button>
@@ -159,6 +290,7 @@ onMounted(() => { void load(); });
           </tr></tbody>
         </table>
       </div>
+      <AppPagination v-if="total" v-model="page" v-model:page-size="pageSize" :total="total" :disabled="loading" />
     </div>
     <div v-if="open" class="app-modal-overlay" @click.self="!busy && (open = false)">
       <div class="app-modal-panel aggregate-modal aggregate-modal--form" role="dialog" aria-modal="true" aria-label="聚合模型配置">
@@ -183,7 +315,7 @@ onMounted(() => { void load(); });
           </div>
           <div class="aggregate-fallback">
             <strong>兜底模型（选填）</strong>
-            <p>策略没有选中可用模型时使用；上游请求失败后的切换尚未接入网关。</p>
+            <p>策略没有选中可用模型时使用；开启失败切换后也会在其他候选失败时尝试此节点。</p>
             <label>选择来源<AppSelect :model-value="fallbackSource" :options="fallbackSources" @update:model-value="setFallbackSource" /></label>
             <div class="aggregate-candidate">
               <AppSelect :model-value="form.fallback_model_id" :options="fallbackOptions" placeholder="不配置兜底模型"
@@ -191,13 +323,55 @@ onMounted(() => { void load(); });
               <button v-if="form.fallback_model_id" type="button" @click="form.fallback_model_id = null">清除</button>
             </div>
           </div>
+          <label v-if="form.default_routing_strategy !== 'single'" class="aggregate-retry">
+            <input v-model="form.retry_on_failure" type="checkbox" />
+            上游请求失败时尝试其他候选模型
+          </label>
+          <p v-if="form.default_routing_strategy !== 'single'">开启后单次请求会避开已失败节点，依次尝试其他可用节点；流式输出开始后不会切换。</p>
           <label>说明<input v-model="form.description" maxlength="255" placeholder="可选" /></label>
-          <p>轮询及最低延迟目前仅支持配置与模拟；尚无真实网关计数器或实时延迟采集。</p>
+          <p>轮询使用网关进程内计数；最低延迟尚无实时采集数据，按候选顺序选择可用模型。</p>
           <div class="aggregate-actions">
             <button type="button" :disabled="busy" @click="open = false">取消</button>
             <button class="page-action" type="submit" :disabled="busy || !strategies.length">保存</button>
           </div>
         </form>
+      </div>
+    </div>
+    <div v-if="detailTarget" class="app-modal-overlay" @click.self="closeDetail">
+      <div class="app-modal-panel aggregate-modal aggregate-modal--detail" role="dialog" aria-modal="true" :aria-label="`${detailTarget.public_model_name} 节点详情`">
+        <div class="aggregate-detail-heading">
+          <div><h2>{{ detailTarget.public_model_name }} · 节点详情</h2><p>最近 24 小时该聚合模型的成功调用；TTFT 为首个输出耗时，TPS 为输出 Token / 输出耗时。</p></div>
+          <button type="button" @click="closeDetail">关闭</button>
+        </div>
+        <p v-if="detailLoading" role="status">正在加载节点状态...</p>
+        <template v-else-if="detail">
+          <div v-if="detail.nodes.length" class="aggregate-detail-table">
+            <div v-if="admin" class="aggregate-probe-actions">
+              <label><input type="radio" value="network" v-model="probeMode" :disabled="probeBusy" /> 网络连通</label>
+              <label><input type="radio" value="actual" v-model="probeMode" :disabled="probeBusy" /> 实际调用</label>
+              <button type="button" :disabled="!selectedNodes.length || probeBusy" @click="checkNodes">
+                {{ probeBusy ? "检测中..." : `检测节点状态（${selectedNodes.length}）` }}
+              </button>
+              <span>实际调用可能产生上游费用；检测不会改变节点退避状态。</span>
+            </div>
+            <table><thead><tr><th v-if="admin"><input type="checkbox" aria-label="全选节点" :checked="selectedNodes.length === detail.nodes.length" :disabled="probeBusy" @change="toggleAllNodes" /></th><th>接入模型</th><th>角色</th><th>状态</th><th>平均 TTFT</th><th>平均 TPS</th><th v-if="admin">检测结果</th></tr></thead>
+              <tbody><tr v-for="node in detail.nodes" :key="node.model_id">
+                <td v-if="admin"><input v-model="selectedNodes" type="checkbox" :value="node.model_id" :disabled="probeBusy" :aria-label="`选择 ${node.access_model_code}`" /></td>
+                <td>{{ node.access_model_code }} <small>#{{ node.model_id }}</small></td>
+                <td>{{ nodeRole(node.role) }}</td>
+                <td>{{ nodeStatus(node.status) }}<small v-if="node.status === 'cooldown'">（剩余 {{ node.cooldown_seconds }} 秒）</small></td>
+                <td>{{ node.avg_ttft_ms === null ? "暂无数据" : `${node.avg_ttft_ms} ms` }}<small>{{ node.ttft_samples }} 个样本</small></td>
+                <td>{{ node.avg_tps === null ? "暂无数据" : `${node.avg_tps} token/s` }}<small>{{ node.tps_samples }} 个样本</small></td>
+                <td v-if="admin" :class="`probe-${probeResults[node.model_id]?.result ?? 'pending'}`">
+                  {{ probeResults[node.model_id]?.message ?? "未检测" }}
+                  <small v-if="probeResults[node.model_id]">{{ probeResults[node.model_id]?.latency_ms }} ms</small>
+                </td>
+              </tr></tbody>
+            </table>
+          </div>
+          <p v-else class="aggregate-empty">当前没有配置候选模型。</p>
+        </template>
+        <p v-else class="aggregate-empty">节点详情加载失败，请关闭后重试。</p>
       </div>
     </div>
     <div v-if="confirmTarget" class="app-modal-overlay app-modal-overlay--confirmation" @click.self="!busy && (confirmTarget = null)">
@@ -212,7 +386,12 @@ onMounted(() => { void load(); });
 </template>
 
 <style scoped>
-.aggregate-heading,.aggregate-actions{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.aggregate-heading,.aggregate-actions{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.aggregate-heading > div:first-child{flex:1 1 380px;min-width:0}
+.aggregate-heading > .app-list-toolbar-actions{width:max-content;flex-wrap:nowrap}
+.aggregate-search{display:flex;align-items:center;gap:8px;flex:0 1 320px;max-width:100%;min-width:0}
+.aggregate-search input{flex:1 1 0;width:auto;min-width:0}
+.aggregate-search button{flex:none}
 h2{margin:0 0 8px;font-size:20px}p{margin:0;color:#64748b;font-size:13px;line-height:1.5}
 .aggregate-empty{margin-top:24px;padding:32px;text-align:center;background:#f7fafb;border-radius:10px;color:#64748b}
 .aggregate-empty a{color:#168d81}.aggregate-table-wrap{overflow:auto;margin-top:24px}table{width:100%;border-collapse:collapse;text-align:left;white-space:nowrap}
@@ -220,8 +399,22 @@ td,th{padding:16px 12px;border-bottom:1px solid #e2e8f0}th{color:#64748b;font-si
 td button,.aggregate-actions button{border:0;background:transparent;color:#146d70;padding:8px;cursor:pointer}
 td button.danger{color:#c93636}.aggregate-modal{width:min(580px,calc(100vw - 32px));padding:24px}
 .aggregate-modal--form{width:min(720px,calc(100vw - 32px))}
+.aggregate-modal--detail{width:min(1050px,calc(100vw - 32px))}
+.aggregate-detail-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px}
+.aggregate-detail-heading button{border:0;background:none;color:#146d70;cursor:pointer;padding:6px}
+.aggregate-detail-table{overflow-x:auto}
+.aggregate-detail-table table{white-space:nowrap}
+.aggregate-detail-table td small{display:block;margin-top:5px;color:#64748b;font-size:12px}
+.aggregate-probe-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;font-size:13px;color:#475569}
+.aggregate-probe-actions label{display:flex;align-items:center;gap:4px}
+.aggregate-probe-actions button{border:0;border-radius:6px;padding:8px 12px;background:#176c61;color:white;cursor:pointer}
+.aggregate-probe-actions button:disabled{opacity:.5;cursor:not-allowed}
+.aggregate-probe-actions span{flex-basis:100%;color:#64748b}
+.aggregate-detail-table .probe-ok{color:#15803d}.aggregate-detail-table .probe-failed{color:#b91c1c}
 .aggregate-form{display:grid;gap:16px;margin-top:18px}.aggregate-form label{display:grid;gap:7px;color:#475569;font-size:13px}
 .aggregate-form input{min-height:38px;padding:8px 10px;border:1px solid #d8e1e9;border-radius:8px}
+.aggregate-form .aggregate-retry{display:flex;align-items:center;gap:8px}
+.aggregate-retry input{min-height:auto}
 .aggregate-candidates{display:grid;gap:10px;padding:14px;border:1px solid #d8e1e9;border-radius:10px}
 .aggregate-fallback{display:grid;gap:10px;padding:14px;border:1px solid #d8e1e9;border-radius:10px}
 .aggregate-candidate{display:flex;align-items:center;gap:8px;min-width:0}.aggregate-candidate .app-select{min-width:0;flex:1}

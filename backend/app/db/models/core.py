@@ -48,6 +48,7 @@ class Project(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[int] = mapped_column(Integer, default=1)
     owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    amount_budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
@@ -115,6 +116,7 @@ class ApiKey(TimestampMixin, Base):
     tpm_limit: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     qps_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     token_budget: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    amount_budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     budget_period: Mapped[str | None] = mapped_column(String(16), nullable=True)
     wait_mode: Mapped[str] = mapped_column(String(16), default="block")
     max_wait_ms: Mapped[int] = mapped_column(Integer, default=30000)
@@ -180,7 +182,11 @@ class ProviderModel(TimestampMixin, Base):
     max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     input_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     output_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
-    currency: Mapped[str] = mapped_column(String(16), default="USD")
+    price_unit_k: Mapped[int] = mapped_column(Integer, default=1)
+    tiered_pricing: Mapped[bool] = mapped_column(Boolean, default=False)
+    input_price_tiers: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    output_price_tiers: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    currency: Mapped[str] = mapped_column(String(16), default="CNY")
     status: Mapped[int] = mapped_column(Integer, default=1)
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
 
@@ -224,6 +230,7 @@ class AggregatedModel(TimestampMixin, Base):
     default_routing_strategy: Mapped[str] = mapped_column(String(32), default="priority")
     routing_model_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     fallback_model_id: Mapped[int | None] = mapped_column(ForeignKey("provider_models.id"), nullable=True)
+    retry_on_failure: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     workflow_id: Mapped[int | None] = mapped_column(ForeignKey("routing_workflows.id"), nullable=True, index=True)
     workflow_bindings: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
@@ -297,6 +304,8 @@ class RequestLog(Base):
     http_status: Mapped[int] = mapped_column(Integer)
     provider_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ttft_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tpot_ms: Mapped[float | None] = mapped_column(Numeric(12, 3), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
@@ -321,9 +330,11 @@ class UsageRecord(Base):
     model_type: Mapped[str] = mapped_column(String(32))
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reasoning_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    non_reasoning_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
-    currency: Mapped[str] = mapped_column(String(16), default="USD")
+    currency: Mapped[str] = mapped_column(String(16), default="CNY")
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
 

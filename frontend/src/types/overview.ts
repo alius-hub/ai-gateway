@@ -15,3 +15,14 @@ export interface OverviewSummary {
   status_message: string;
   generated_at: string;
 }
+
+export interface OverviewActivity {
+  days: number;
+  total_requests: number;
+  successful_requests: number;
+  total_tokens: number;
+  daily: { date: string; requests: number; successes: number; tokens: number }[];
+  top_models: { name: string; requests: number }[];
+  recent_failures: { request_id: string; model: string; http_status: number; created_at: string }[];
+  generated_at: string;
+}

@@ -1,0 +1,28 @@
+.analytics-intro { color: #708192; font-size: 13px; line-height: 1.6; }
+.analytics-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.analytics-card { display: flex; flex-direction: column; gap: 8px; min-height: 106px; }
+.analytics-card span { color: #708192; font-size: 12px; }
+.analytics-card strong { color: #193e45; font-size: clamp(18px, 2vw, 26px); overflow-wrap: anywhere; }
+.analytics-card small { color: #81909b; font-size: 11px; }
+.analytics-columns { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr); gap: 18px; }
+.analytics-panel { min-width: 0; }
+.analytics-panel h2 { margin: 0 0 8px; color: #263f4d; font-size: 16px; }
+.analytics-panel p { margin: 0 0 14px; color: #81909b; font-size: 12px; line-height: 1.6; }
+.analytics-switch { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.analytics-switch button { padding: 6px 10px; border: 1px solid #d6e9e3; border-radius: 7px; background: #fff; color: #526778; cursor: pointer; }
+.analytics-switch button.active { background: #217c70; border-color: #217c70; color: #fff; }
+.analytics-table-wrap { max-width: 100%; overflow-x: auto; }
+.analytics-table { width: 100%; border-collapse: collapse; text-align: left; white-space: nowrap; }
+.analytics-table th, .analytics-table td { padding: 12px 10px; border-bottom: 1px solid #e9eff1; font-size: 12px; }
+.analytics-table th { color: #748696; font-weight: 600; }
+.analytics-table td { color: #344b55; }
+.analytics-table button { padding: 0; border: 0; background: none; color: #217c70; font: inherit; cursor: pointer; }
+.analytics-table button:hover { text-decoration: underline; }
+.analytics-empty { padding: 26px 0; text-align: center; color: #8796a3; font-size: 13px; }
+.analytics-share { display: flex; align-items: center; gap: 12px; padding: 8px 0; color: #526778; font-size: 12px; }
+.analytics-share strong { width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.analytics-share__track { flex: 1; height: 9px; border-radius: 8px; background: #edf4f2; }
+.analytics-share__fill { height: 100%; border-radius: 8px; background: #38a28d; }
+.analytics-error { color: #b13939; font-size: 13px; }
+@media (max-width: 1100px) { .analytics-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } .analytics-columns { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .analytics-cards { grid-template-columns: 1fr 1fr; } .analytics-card strong { font-size: 18px; } }

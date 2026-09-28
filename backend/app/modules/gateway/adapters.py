@@ -89,12 +89,26 @@ def usage_counts(payload: dict, protocol: str) -> tuple[int, int | None, int | N
     else:
         usage = payload.get("usageMetadata") or {}
         input_count, output_count = usage.get("promptTokenCount"), usage.get("candidatesTokenCount")
+        thoughts = usage.get("thoughtsTokenCount")
+        if type(output_count) is int and type(thoughts) is int and thoughts >= 0:
+            output_count += thoughts
         total = usage.get("totalTokenCount")
     if type(total) is not int or total < 0:
         return None
     return total, input_count if type(input_count) is int else None, (
         output_count if type(output_count) is int else None
     )
+
+
+def reasoning_count(payload: dict, protocol: str) -> int | None:
+    if protocol in OPENAI_PROTOCOLS:
+        details = (payload.get("usage") or {}).get("completion_tokens_details") or {}
+        count = details.get("reasoning_tokens")
+    elif protocol == "gemini":
+        count = (payload.get("usageMetadata") or {}).get("thoughtsTokenCount")
+    else:
+        return None
+    return count if type(count) is int and count >= 0 else None
 
 
 def normalize(payload: dict, protocol: str, kind: str, public_name: str) -> dict:

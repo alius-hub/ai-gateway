@@ -39,6 +39,11 @@ export interface ProviderItem {
   protocol_count?: number;
 }
 
+export interface PriceTier {
+  up_to_tokens: number | null;
+  price: number;
+}
+
 export interface AccessModelItem {
   id: number;
   provider_id: number;
@@ -53,6 +58,12 @@ export interface AccessModelItem {
   max_concurrency: number | null;
   context_window: number | null;
   timeout_ms: number | null;
+  price_unit_k: number;
+  input_price: number | null;
+  output_price: number | null;
+  tiered_pricing: boolean;
+  input_price_tiers: PriceTier[];
+  output_price_tiers: PriceTier[];
   status: number;
   currency?: string;
 }

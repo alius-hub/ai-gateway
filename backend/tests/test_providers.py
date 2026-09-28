@@ -1,4 +1,5 @@
 import unittest
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -90,6 +91,63 @@ class ProviderApiTest(unittest.TestCase):
                                           json={"status": 0}, headers=self.admin).json()["data"]["status"], 0)
         self.assertEqual(self.client.get(f"{self.path}/{item['id']}/health",
                                          headers=self.viewer).json()["data"]["health_status"], "unknown")
+
+    def test_combined_filters_counts_and_pagination(self):
+        def create(name, code, secret=None):
+            payload = {
+                "name": name, "code": code, "provider_type": "openai_compatible",
+                "base_url": "https://example.com", "api_key": secret,
+            }
+            response = self.client.post(self.path, json=payload, headers=self.admin)
+            self.assertEqual(response.status_code, 201, response.text)
+            return response.json()["data"]["id"]
+
+        alpha = create("Alpha", "alpha", "alpha-key")
+        beta = create("Beta", "beta")
+        gamma = create("Gamma", "gamma", "gamma-key")
+        self.client.post(f"{self.path}/{gamma}/protocols", headers=self.admin, json={
+            "code": "extra", "protocol_type": "gemini", "base_url": "https://example.com",
+        })
+        self.client.patch(f"{self.path}/{beta}/status", headers=self.admin, json={"status": 0})
+
+        def get(mode, conditions, **params):
+            response = self.client.get(self.path, headers=self.viewer, params={
+                "filters": json.dumps({"mode": mode, "conditions": conditions}), **params,
+            })
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()["data"]
+
+        has_secret = {"field": "secret_count", "operator": "gte", "value": "1"}
+        enabled = {"field": "status", "operator": "eq", "value": "1"}
+        self.assertEqual(get("and", [{"field": "id", "operator": "eq",
+                         "value": "1"}])["items"][0]["id"], alpha)
+        self.assertEqual(get("and", [has_secret, enabled])["total"], 2)
+        self.assertEqual([item["id"] for item in get("and", [has_secret], page=2,
+                                                   page_size=1)["items"]], [alpha])
+        self.assertEqual(get("and", [has_secret, {"field": "protocol_count",
+                         "operator": "gt", "value": "1"}])["items"][0]["id"], gamma)
+        self.assertEqual(get("or", [
+            {"field": "name", "operator": "contains", "value": "alp"},
+            {"field": "status", "operator": "eq", "value": "0"},
+        ])["total"], 2)
+        self.assertEqual(get("or", [has_secret, {"field": "status", "operator": "eq",
+                         "value": "0"}], keyword="beta")["total"], 1)
+        self.assertEqual(get("and", [{"field": "name", "operator": "contains",
+                         "value": "%"}])["total"], 0)
+
+    def test_invalid_filters_are_rejected(self):
+        for group in (
+            {"mode": "and", "conditions": [{"field": "api_key_ciphertext", "operator": "eq",
+                                            "value": "secret"}]},
+            {"mode": "and", "conditions": [{"field": "name", "operator": "gt",
+                                            "value": "a"}]},
+            {"mode": "and", "conditions": [{"field": "id", "operator": "eq", "value": "oops"}]},
+            {"mode": "and", "conditions": [{"field": "status", "operator": "eq", "value": "2"}]},
+            {"mode": "xor", "conditions": []},
+        ):
+            response = self.client.get(self.path, headers=self.viewer,
+                                       params={"filters": json.dumps(group)})
+            self.assertEqual(response.status_code, 422, response.text)
 
     def test_multiple_connections_and_model_ownership(self):
         def provider(code):

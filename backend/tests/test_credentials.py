@@ -1,5 +1,8 @@
 import hashlib
+import json
 import unittest
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -18,10 +21,12 @@ from app.db.models import (
     ApiKey,
     Organization,
     Project,
+    ProjectMember,
     Provider,
     ProviderModel,
     ProviderProtocol,
     ProviderSecret,
+    UsageRecord,
     User,
 )
 from app.db.session import get_db
@@ -50,9 +55,10 @@ class CredentialApiTest(unittest.TestCase):
             "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool,
         )
         Base.metadata.create_all(self.engine, tables=[
-            User.__table__, Organization.__table__, Project.__table__, Provider.__table__,
+            User.__table__, Organization.__table__, Project.__table__, ProjectMember.__table__,
+            Provider.__table__,
             ProviderProtocol.__table__, ProviderSecret.__table__, ProviderModel.__table__,
-            AggregatedModel.__table__, ApiKey.__table__,
+            AggregatedModel.__table__, ApiKey.__table__, UsageRecord.__table__,
         ])
         self.db = Session(self.engine)
         self.db.add_all([
@@ -109,6 +115,19 @@ class CredentialApiTest(unittest.TestCase):
 
         listed = self.client.get(path, headers=self.admin)
         self.assertEqual(listed.json()["data"]["total"], 1)
+        filtered = self.client.get(path, headers=self.admin, params={
+            "filters": json.dumps({"mode": "and", "conditions": [
+                {"field": "name", "operator": "contains", "value": "Test"},
+                {"field": "qps_limit", "operator": "eq", "value": "5"},
+            ]}),
+        })
+        self.assertEqual(filtered.status_code, 200, filtered.text)
+        self.assertEqual(filtered.json()["data"]["total"], 1)
+        self.assertEqual(self.client.get(path, headers=self.member, params={
+            "filters": json.dumps({"mode": "and", "conditions": [
+                {"field": "name", "operator": "eq", "value": "Test key"},
+            ]}),
+        }).status_code, 403)
         self.assertNotIn(raw, listed.text)
         self.assertNotIn(stored.key_ciphertext, listed.text)
         denied = self.client.get(f"{path}/{stored.id}", headers=self.member)
@@ -143,6 +162,56 @@ class CredentialApiTest(unittest.TestCase):
         disabled = self.client.patch(f"{path}/{stored.id}/status",
                                      json={"status": 0}, headers=self.admin)
         self.assertEqual(disabled.json()["data"]["status"], 0)
+
+    def test_project_key_optional_owner_must_be_active_project_member(self):
+        path = "/api/admin/v1/credentials/project-keys"
+        payload = {**self.payload(), "project_id": 1}
+        unassigned = self.client.post(path, json=payload, headers=self.admin)
+        self.assertEqual(unassigned.status_code, 201, unassigned.text)
+        self.assertIsNone(unassigned.json()["data"]["user_id"])
+        self.assertEqual(self.client.post(
+            path, json={**payload, "user_id": 2}, headers=self.admin,
+        ).status_code, 422)
+        self.db.add(Project(id=2, name="Other", code="other", owner_user_id=1))
+        self.db.add(ProjectMember(project_id=2, user_id=2, role="developer", status=1))
+        self.db.commit()
+        self.assertEqual(self.client.post(
+            path, json={**payload, "user_id": 2}, headers=self.admin,
+        ).status_code, 422)
+        self.db.add(ProjectMember(project_id=1, user_id=2, role="developer", status=1))
+        self.db.commit()
+        created = self.client.post(path, json={**payload, "user_id": 2}, headers=self.admin)
+        self.assertEqual(created.status_code, 201, created.text)
+        key_id = created.json()["data"]["id"]
+        self.assertEqual(self.db.get(ApiKey, key_id).user_id, 2)
+        listed = self.client.get(path, headers=self.admin).json()["data"]["items"][0]
+        self.assertEqual(listed["owner_name"], "member")
+        summary = self.client.get("/api/admin/v1/projects/1/keys",
+                                  headers=self.admin).json()["data"]["items"][0]
+        self.assertEqual(summary["owner_name"], "member")
+        self.assertEqual(summary["creator_name"], "admin")
+        member = self.db.query(ProjectMember).filter_by(project_id=1).one()
+        member.status = 0
+        self.db.commit()
+        self.assertEqual(self.client.post(
+            path, json={**payload, "user_id": 2}, headers=self.admin,
+        ).status_code, 422)
+        self.client.patch(f"{path}/{key_id}/status", json={"status": 0}, headers=self.admin)
+        self.assertEqual(self.client.patch(
+            f"{path}/{key_id}/status", json={"status": 1}, headers=self.admin,
+        ).status_code, 422)
+        member.status = 1
+        self.db.get(User, 2).status = 0
+        self.db.commit()
+        self.assertEqual(self.client.post(
+            path, json={**payload, "user_id": 2}, headers=self.admin,
+        ).status_code, 422)
+        self.assertEqual(self.client.post(
+            path, json={**payload, "user_id": 999}, headers=self.admin,
+        ).status_code, 422)
+        self.assertEqual(self.client.post("/api/admin/v1/credentials/user-keys", json={
+            **self.payload(), "user_id": 1, "project_id": 1,
+        }, headers=self.admin).status_code, 422)
 
     def test_personal_key_and_invalid_binding_or_budget(self):
         path = "/api/admin/v1/credentials/user-keys"
@@ -252,6 +321,66 @@ class CredentialApiTest(unittest.TestCase):
                                    json={"custom_prefix": "bad!"}, headers=self.admin)
         self.assertEqual(invalid.status_code, 422)
         self.assertEqual(self.db.get(ApiKey, created["id"]).key_hash, original_hash)
+
+    def test_project_key_overview_usage_pagination_and_access(self):
+        path = "/api/admin/v1/projects/1/keys"
+        self.db.get(Project, 1).owner_user_id = 2
+        self.db.add(Project(id=2, name="Other", code="other", owner_user_id=1))
+        self.db.get(Project, 1).amount_budget = Decimal("100.00")
+        self.db.commit()
+        first = self.client.post("/api/admin/v1/credentials/project-keys", json={
+            **self.payload(), "project_id": 1, "amount_budget": 10,
+        }, headers=self.admin).json()["data"]
+        second = self.client.post("/api/admin/v1/credentials/project-keys", json={
+            **self.payload(), "project_id": 1, "budget_period": "month",
+            "token_budget": 5000, "amount_budget": 20,
+        }, headers=self.admin).json()["data"]
+        other = self.client.post("/api/admin/v1/credentials/project-keys", json={
+            **self.payload(), "project_id": 2,
+        }, headers=self.admin).json()["data"]
+        now = datetime.now(UTC).replace(tzinfo=None)
+        self.db.get(ApiKey, second["id"]).expires_at = now - timedelta(days=1)
+        last_month = now - timedelta(days=40)
+        self.db.add_all([
+            UsageRecord(request_log_id=1, project_id=1, api_key_id=first["id"], model_type="llm",
+                        total_tokens=120, estimated_cost=Decimal("1.20"),
+                        currency="CNY", created_at=now),
+            UsageRecord(request_log_id=2, project_id=1, api_key_id=first["id"], model_type="llm",
+                        total_tokens=30, estimated_cost=Decimal("2.00"),
+                        currency="CNY", created_at=last_month),
+            UsageRecord(request_log_id=3, project_id=1, api_key_id=second["id"], model_type="llm",
+                        total_tokens=50, estimated_cost=Decimal("9.00"),
+                        currency="USD", created_at=now),
+            UsageRecord(request_log_id=4, project_id=2, api_key_id=other["id"], model_type="llm",
+                        total_tokens=500, estimated_cost=Decimal("5.00"),
+                        currency="CNY", created_at=now),
+        ])
+        self.db.commit()
+        response = self.client.get(path, headers=self.member, params={"page_size": 1, "page": 2})
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()["data"]
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(data["project_amount_budget"], "100.00")
+        self.assertEqual(Decimal(str(data["project_total_cost"])), Decimal("3.20"))
+        key = data["items"][0]
+        self.assertEqual(key["id"], first["id"])
+        self.assertEqual(key["creator_name"], "admin")
+        self.assertEqual(key["total_tokens"], 150)
+        self.assertEqual(Decimal(str(key["total_cost"])), Decimal("3.20"))
+        self.assertEqual(key["period_tokens"], 120)
+        self.assertEqual(Decimal(str(key["period_cost"])), Decimal("1.20"))
+        self.assertNotIn(first["api_key"], response.text)
+        self.assertNotIn("key_ciphertext", response.text)
+        monthly_page = self.client.get(path, headers=self.member, params={"page_size": 1})
+        monthly = monthly_page.json()["data"]["items"][0]
+        self.assertEqual(monthly["id"], second["id"])
+        self.assertTrue(monthly["expires_at"].endswith("Z"))
+        self.assertEqual(monthly["period_tokens"], 50)
+        self.assertEqual(Decimal(str(monthly["period_cost"])), Decimal("0"))
+        self.assertEqual(self.client.get("/api/admin/v1/projects/2/keys",
+                                         headers=self.member).status_code, 403)
+        self.assertEqual(self.client.get("/api/admin/v1/projects/999/keys",
+                                         headers=self.admin).status_code, 404)
 
 
 if __name__ == "__main__":

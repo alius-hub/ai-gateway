@@ -2,12 +2,16 @@
 import { computed, ref, watch } from "vue";
 
 import AppPagination from "@/AppPagination.vue";
+import AppFilterTags from "@/AppFilterTags.vue";
+import AppListFilter from "@/AppListFilter.vue";
 import AppSelect from "@/AppSelect.vue";
 import { createAccessModel, listAccessModels, updateAccessModel } from "@/api/models";
 import { listProtocols, listProviders, listSecrets, type ProviderProtocol, type ProviderSecret } from "@/api/providers";
 import { t } from "@/i18n";
 import { useAuthStore } from "@/stores/auth";
-import type { AccessModelItem, ProviderItem } from "@/types/resource";
+import type { AccessModelItem, PriceTier, ProviderItem } from "@/types/resource";
+import type { FilterGroup } from "@/types/filter";
+import { listFilterFields } from "@/utils/listFilterFields";
 import { showToast } from "@/utils/toast";
 
 const auth = useAuthStore();
@@ -20,6 +24,7 @@ const page = ref(1);
 const pageSize = ref(20);
 const total = ref(0);
 const filterProvider = ref(0);
+const filters = ref<FilterGroup>({ mode: "and", conditions: [] });
 const loading = ref(false);
 const busy = ref(false);
 const editing = ref<AccessModelItem | null>(null);
@@ -30,7 +35,39 @@ const form = ref({
   access_model_code: "", provider_model_name: "", model_type: "llm", interface_type: "",
   base_url: "", region: "", max_concurrency: null as number | null,
   context_window: null as number | null, timeout_ms: null as number | null,
+  price_unit_k: 1, input_price: null as number | null, output_price: null as number | null,
+  tiered_pricing: false, input_price_tiers: [] as PriceTier[],
+  output_price_tiers: [] as PriceTier[],
 });
+type TierField = "input_price_tiers" | "output_price_tiers";
+
+function toggleTiered(enabled: boolean) {
+  form.value.tiered_pricing = enabled;
+  if (enabled) {
+    for (const field of ["input_price_tiers", "output_price_tiers"] as const) {
+      if (!form.value[field].length) {
+        form.value[field] = [{ up_to_tokens: null, price: form.value[
+          field === "input_price_tiers" ? "input_price" : "output_price"
+        ] ?? 0 }];
+      }
+    }
+  }
+}
+
+function addTier(field: TierField) {
+  const tiers = form.value[field];
+  const last = tiers[tiers.length - 1];
+  const previous = tiers.length > 1 ? tiers[tiers.length - 2].up_to_tokens ?? 0 : 0;
+  last.up_to_tokens = previous + 1000;
+  tiers.push({ up_to_tokens: null, price: last.price });
+}
+
+function removeTier(field: TierField, index: number) {
+  const tiers = form.value[field];
+  if (tiers.length <= 1) return;
+  tiers.splice(index, 1);
+  tiers[tiers.length - 1].up_to_tokens = null;
+}
 let requestId = 0;
 let refRequestId = 0;
 const modelTypeOptions = ["llm", "vlm", "embedding", "rerank", "ocr", "text_to_image", "asr", "tts"].map((value) => ({ label: value.toUpperCase(), value }));
@@ -65,6 +102,7 @@ async function load() {
   try {
     const result = await listAccessModels({
       page: page.value, page_size: pageSize.value,
+      filters: filters.value,
       ...(filterProvider.value ? { provider_id: filterProvider.value } : {}),
     });
     if (id !== requestId) return;
@@ -142,6 +180,11 @@ async function openForm(item: AccessModelItem | null = null) {
     base_url: item?.base_url ?? "", region: item?.region ?? "",
     max_concurrency: item?.max_concurrency ?? null,
     context_window: item?.context_window ?? null, timeout_ms: item?.timeout_ms ?? null,
+    price_unit_k: item?.price_unit_k ?? 1, input_price: item?.input_price ?? null,
+    output_price: item?.output_price ?? null,
+    tiered_pricing: item?.tiered_pricing ?? false,
+    input_price_tiers: item?.input_price_tiers.map((tier) => ({ ...tier })) ?? [],
+    output_price_tiers: item?.output_price_tiers.map((tier) => ({ ...tier })) ?? [],
   };
   formOpen.value = true;
   if (item) {
@@ -155,6 +198,20 @@ async function openForm(item: AccessModelItem | null = null) {
 
 async function save() {
   if (!form.value.provider_id || !form.value.interface_type || !form.value.protocol_id || busy.value) return;
+  if (form.value.tiered_pricing) {
+    for (const field of ["input_price_tiers", "output_price_tiers"] as const) {
+      const tiers = form.value[field];
+      if (!tiers.length || tiers.some((tier, index) => !Number.isFinite(tier.price)
+        || tier.price < 0 || (index < tiers.length - 1 && (
+          !Number.isInteger(tier.up_to_tokens) || (tier.up_to_tokens ?? 0) <= (
+            index ? tiers[index - 1].up_to_tokens ?? 0 : 0
+          )
+        )))) {
+        showToast("error", t("请填写有效且严格递增的阶梯 Token 上限与单价"));
+        return;
+      }
+    }
+  }
   busy.value = true;
   try {
     const payload = {
@@ -164,6 +221,11 @@ async function save() {
       base_url: form.value.base_url.trim() || null, region: form.value.region || null,
       max_concurrency: form.value.max_concurrency || null,
       context_window: form.value.context_window || null, timeout_ms: form.value.timeout_ms || null,
+      price_unit_k: form.value.price_unit_k, input_price: form.value.input_price,
+      output_price: form.value.output_price,
+      tiered_pricing: form.value.tiered_pricing,
+      input_price_tiers: form.value.input_price_tiers,
+      output_price_tiers: form.value.output_price_tiers,
     };
     if (editing.value) await updateAccessModel(editing.value.id, {
       protocol_id: payload.protocol_id, secret_id: payload.secret_id,
@@ -171,6 +233,11 @@ async function save() {
       base_url: payload.base_url, region: payload.region,
       max_concurrency: payload.max_concurrency, context_window: payload.context_window,
       timeout_ms: payload.timeout_ms,
+      price_unit_k: payload.price_unit_k, input_price: payload.input_price,
+      output_price: payload.output_price,
+      tiered_pricing: payload.tiered_pricing,
+      input_price_tiers: payload.input_price_tiers,
+      output_price_tiers: payload.output_price_tiers,
     });
     else await createAccessModel(payload);
     formOpen.value = false;
@@ -204,6 +271,12 @@ function changeFilter(value: string | number) {
   else void load();
 }
 
+function applyFilters(value: FilterGroup) {
+  filters.value = value;
+  if (page.value !== 1) page.value = 1;
+  else void load();
+}
+
 void loadProviders();
 watch([page, pageSize], () => void load(), { immediate: true });
 </script>
@@ -217,11 +290,14 @@ watch([page, pageSize], () => void load(), { immediate: true });
     <div class="page-card catalog-card">
       <div class="catalog-toolbar">
         <h2>{{ t("供应商模型") }} · {{ total }}</h2>
+        <AppFilterTags :fields="listFilterFields['access-models']" :model-value="filters" @apply="applyFilters" />
         <div class="catalog-filter"><AppSelect :model-value="filterProvider" :options="providerOptions" :aria-label="t('筛选供应商')" @update:model-value="changeFilter" />
-          <button type="button" :disabled="loading" @click="load">{{ t("刷新") }}</button></div>
+          <button type="button" :disabled="loading" @click="load">{{ t("刷新") }}</button>
+          <AppListFilter :fields="listFilterFields['access-models']" :model-value="filters" hide-tags @apply="applyFilters" />
+        </div>
       </div>
       <div class="catalog-scroll"><table>
-        <thead><tr><th>{{ t("平台内部模型编码") }}</th><th>{{ t("上游模型名") }}</th><th>{{ t("供应商") }}</th><th>{{ t("类型") }}</th><th>{{ t("协议") }}</th><th>{{ t("模型 Base URL") }}</th><th>{{ t("密钥") }}</th><th>{{ t("地域") }}</th><th>{{ t("最大并发") }}</th><th>{{ t("最大 Token 容量") }}</th><th>{{ t("超时时间（毫秒）") }}</th><th>{{ t("状态") }}</th><th>{{ t("操作") }}</th></tr></thead>
+        <thead><tr><th>{{ t("平台内部模型编码") }}</th><th>{{ t("上游模型名") }}</th><th>{{ t("供应商") }}</th><th>{{ t("类型") }}</th><th>{{ t("协议") }}</th><th>{{ t("模型 Base URL") }}</th><th>{{ t("密钥") }}</th><th>{{ t("地域") }}</th><th>{{ t("输入/输出价格（元）") }}</th><th>{{ t("最大并发") }}</th><th>{{ t("最大 Token 容量") }}</th><th>{{ t("超时时间（毫秒）") }}</th><th>{{ t("状态") }}</th><th>{{ t("操作") }}</th></tr></thead>
         <tbody>
           <tr v-for="item in records" :key="item.id">
             <td>{{ item.access_model_code }}</td><td>{{ item.provider_model_name }}</td>
@@ -229,13 +305,15 @@ watch([page, pageSize], () => void load(), { immediate: true });
             <td>{{ item.model_type }}</td><td>{{ item.protocol_id ?? "-" }}</td>
             <td :title="item.effective_base_url ?? ''">{{ item.effective_base_url ?? "-" }}<span v-if="!item.base_url" class="catalog-inherited">（{{ t("继承供应商") }}）</span></td>
             <td>{{ item.secret_id ?? t("无需密钥") }}</td>
-            <td>{{ item.region || "-" }}</td><td>{{ item.max_concurrency ?? "-" }}</td>
+            <td>{{ item.region || "-" }}</td>
+            <td>{{ item.tiered_pricing ? `阶梯定价 · 输入 ${item.input_price_tiers.length} 档 / 输出 ${item.output_price_tiers.length} 档 · 每 ${item.price_unit_k}k Token` : item.currency !== "CNY" ? "历史 USD 价格（需重新定价）" : item.input_price == null || item.output_price == null ? "未定价" : `${Number(item.input_price).toFixed(2)} / ${Number(item.output_price).toFixed(2)} / ${item.price_unit_k}k Token` }}</td>
+            <td>{{ item.max_concurrency ?? "-" }}</td>
             <td>{{ item.context_window ?? "-" }}</td><td>{{ item.timeout_ms ?? "-" }}</td>
             <td>{{ t(item.status === 1 ? "启用" : "停用") }}</td>
             <td><span v-if="!admin">-</span><div v-else class="catalog-actions"><button type="button" @click="openForm(item)">{{ t("编辑") }}</button>
               <button type="button" :class="{ 'is-danger': item.status === 1 }" @click="confirmTarget = item">{{ t(item.status === 1 ? "停用" : "启用") }}</button></div></td>
           </tr>
-          <tr v-if="!records.length"><td colspan="13" class="catalog-empty">{{ t(loading ? "正在加载数据..." : "暂无匹配记录") }}</td></tr>
+          <tr v-if="!records.length"><td colspan="14" class="catalog-empty">{{ t(loading ? "正在加载数据..." : "暂无匹配记录") }}</td></tr>
         </tbody>
       </table></div>
       <AppPagination v-if="total" v-model="page" v-model:page-size="pageSize" :total="total" :disabled="loading" />
@@ -258,6 +336,23 @@ watch([page, pageSize], () => void load(), { immediate: true });
           <label>{{ t("最大并发") }}<input v-model.number="form.max_concurrency" type="number" min="1" max="100000" :placeholder="t('选填')" /></label>
           <label>{{ t("最大 Token 容量") }}<input v-model.number="form.context_window" type="number" min="1" max="2147483647" :placeholder="t('选填')" /></label>
           <label>{{ t("超时时间（毫秒）") }}<input v-model.number="form.timeout_ms" type="number" min="1" max="600000" :placeholder="t('选填')" /></label>
+          <label>{{ t("计价单位（N 千 Token）") }}<input v-model.number="form.price_unit_k" type="number" min="1" max="1000000" required /></label>
+          <label class="catalog-full catalog-pricing-toggle"><input type="checkbox" :checked="form.tiered_pricing" @change="toggleTiered(($event.target as HTMLInputElement).checked)" />{{ t("开启阶梯定价（输入和输出分别按本次 Token 长度选档，整段按命中档计价）") }}</label>
+          <template v-if="!form.tiered_pricing">
+            <label>{{ t("输入单价（人民币元）") }}<input :value="form.input_price ?? ''" type="number" min="0" step="0.01" placeholder="未定价" @input="form.input_price = ($event.target as HTMLInputElement).value === '' ? null : Number(($event.target as HTMLInputElement).value)" /></label>
+            <label>{{ t("输出单价（人民币元）") }}<input :value="form.output_price ?? ''" type="number" min="0" step="0.01" placeholder="未定价" @input="form.output_price = ($event.target as HTMLInputElement).value === '' ? null : Number(($event.target as HTMLInputElement).value)" /></label>
+          </template>
+          <div v-for="side in (['input_price_tiers', 'output_price_tiers'] as const)" v-if="form.tiered_pricing" :key="side" class="catalog-full catalog-tier-list">
+            <div class="catalog-tier-heading"><strong>{{ t(side === 'input_price_tiers' ? "输入 Token 阶梯" : "输出 Token 阶梯") }}</strong><button type="button" @click="addTier(side)">{{ t("添加档位") }}</button></div>
+            <div v-for="(tier, index) in form[side]" :key="index" class="catalog-tier-row">
+              <span>{{ index === 0 ? "0" : (form[side][index - 1].up_to_tokens ?? 0) + 1 }} ~</span>
+              <input v-if="index < form[side].length - 1" v-model.number="tier.up_to_tokens" type="number" min="1" max="2147483647" required :aria-label="`${side === 'input_price_tiers' ? '输入' : '输出'}第 ${index + 1} 档 Token 上限`" />
+              <span v-else>{{ t("不限 Token") }}</span>
+              <span>{{ t(`每 ${form.price_unit_k}k Token ¥`) }}</span>
+              <input v-model.number="tier.price" type="number" min="0" step="0.01" required :aria-label="`${side === 'input_price_tiers' ? '输入' : '输出'}第 ${index + 1} 档单价`" />
+              <button type="button" :disabled="form[side].length === 1" @click="removeTier(side, index)">{{ t("删除") }}</button>
+            </div>
+          </div>
         </div>
         <footer><button type="button" :disabled="busy" @click="closeForm">{{ t("取消") }}</button><button type="submit" :disabled="busy || !form.interface_type || !form.protocol_id">{{ t(busy ? "保存中..." : "保存") }}</button></footer>
       </form>
@@ -307,5 +402,11 @@ watch([page, pageSize], () => void load(), { immediate: true });
 .catalog-fields .catalog-full { grid-column:1/-1; }
 .catalog-fields p { margin:0; font-size:12px; color:#a36539; }
 .catalog-fields input { min-width:0; min-height:38px; padding:8px 11px; border:1px solid #dbe5e9; border-radius:9px; font:inherit; }
+.catalog-fields .catalog-pricing-toggle { display:flex; align-items:center; gap:8px; }
+.catalog-fields .catalog-pricing-toggle input { width:16px; height:16px; min-height:auto; padding:0; }
+.catalog-tier-list { display:grid; gap:9px; padding:12px; border:1px solid #dbe5e9; border-radius:10px; }
+.catalog-tier-heading { display:flex; justify-content:space-between; align-items:center; }
+.catalog-tier-row { display:grid; grid-template-columns:auto minmax(100px,1fr) auto minmax(100px,1fr) auto; align-items:center; gap:8px; font-size:12px; }
+@media (max-width:560px) { .catalog-tier-row { grid-template-columns:auto minmax(90px,1fr) auto; } .catalog-tier-row input:nth-of-type(2) { grid-column:2; } }
 @media (max-width:560px) { .catalog-heading { align-items:flex-start; flex-direction:column; } .catalog-fields { grid-template-columns:1fr; } .catalog-fields .catalog-full { grid-column:auto; } }
 </style>

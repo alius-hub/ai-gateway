@@ -8,7 +8,13 @@ from typing import Callable
 
 import httpx
 
-from app.modules.gateway.adapters import CLAUDE_PROTOCOLS, OPENAI_PROTOCOLS, chunk, usage_counts
+from app.modules.gateway.adapters import (
+    CLAUDE_PROTOCOLS,
+    OPENAI_PROTOCOLS,
+    chunk,
+    reasoning_count,
+    usage_counts,
+)
 
 
 @dataclass
@@ -16,6 +22,7 @@ class StreamUsage:
     total: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    reasoning_tokens: int | None = None
     text: str = ""
     completed: bool = False
     seen: bool = False
@@ -68,6 +75,7 @@ def translate(protocol: str, event: str, data: str, model: str,
         counts = usage_counts(payload, protocol)
         if counts:
             usage.total, usage.input_tokens, usage.output_tokens = counts
+            usage.reasoning_tokens = reasoning_count(payload, protocol)
         payload["model"] = model
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
     if protocol in CLAUDE_PROTOCOLS:
@@ -94,6 +102,7 @@ def translate(protocol: str, event: str, data: str, model: str,
         counts = usage_counts(payload, protocol)
         if counts:
             usage.total, usage.input_tokens, usage.output_tokens = counts
+            usage.reasoning_tokens = reasoning_count(payload, protocol)
             usage.completed = True
         candidates = payload.get("candidates") or []
         if candidates:

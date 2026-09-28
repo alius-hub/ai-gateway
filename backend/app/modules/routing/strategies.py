@@ -32,15 +32,20 @@ def validate_candidates(db: Session, strategy: str, ids: list[int], model_type: 
 
 def choose_model(strategy: str, ids: list[int], models: dict[int, ProviderModel], *,
                  round_robin_index: int = 0, latencies: dict[int, int] | None = None,
-                 fallback_model_id: int | None = None) -> dict:
+                 fallback_model_id: int | None = None,
+                 excluded_ids: set[int] | None = None) -> dict:
     if strategy not in STRATEGIES:
         raise HTTPException(422, "聚合模型尚未使用内置路由策略。")
-    available = [model_id for model_id in ids if models[model_id].status == 1]
+    excluded = excluded_ids or set()
+    active = [model_id for model_id in ids if models[model_id].status == 1]
+    available = [model_id for model_id in active if model_id not in excluded]
     selected: int | None = None
     if strategy == "single" and available:
         selected = available[0]
     elif strategy == "round_robin" and available:
-        selected = available[round_robin_index % len(available)]
+        start = round_robin_index % len(active)
+        ordered = active[start:] + active[:start]
+        selected = next(model_id for model_id in ordered if model_id in available)
     elif strategy == "least_latency":
         measured = [model_id for model_id in available if model_id in (latencies or {})]
         if measured:
@@ -48,7 +53,7 @@ def choose_model(strategy: str, ids: list[int], models: dict[int, ProviderModel]
     trace = [{"strategy": strategy, "outcome": "selected" if selected else "unavailable"}]
     if selected is None and fallback_model_id is not None:
         fallback = models[fallback_model_id]
-        if fallback.status == 1:
+        if fallback.status == 1 and fallback_model_id not in excluded:
             selected = fallback_model_id
         trace.append({"strategy": "fallback", "outcome": "selected" if selected else "unavailable"})
     return {"selected_model_id": selected, "trace": trace}

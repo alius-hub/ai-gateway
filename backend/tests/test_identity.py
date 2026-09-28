@@ -1,4 +1,5 @@
 import unittest
+import json
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -61,6 +62,36 @@ class IdentityPermissionsTest(unittest.TestCase):
         require_access(self.db, self.manager, "organizations", self.child, write=True)
         with self.assertRaises(HTTPException):
             require_access(self.db, self.manager, "users", self.viewer, write=True)
+
+    def test_organization_filter_keeps_ancestors_and_respects_access(self):
+        self.db.add(OrganizationMember(
+            id=1, organization_id=2, user_id=2, role="readonly", status=1))
+        self.db.commit()
+        app.dependency_overrides[get_db] = lambda: self.db
+        try:
+            client = TestClient(app)
+            admin = {"Authorization": f"Bearer {create_access_token('1')}"}
+            manager = {"Authorization": f"Bearer {create_access_token('2')}"}
+            condition = json.dumps({"mode": "and", "conditions": [
+                {"field": "name", "operator": "eq", "value": "Child"},
+            ]})
+            page = client.get("/api/admin/v1/organizations", headers=admin,
+                              params={"filters": condition})
+            self.assertEqual(page.json()["data"]["total"], 1)
+            tree = client.get("/api/admin/v1/organizations/tree", headers=admin,
+                              params={"filters": condition})
+            self.assertEqual(tree.json()["data"][0]["name"], "Root")
+            self.assertEqual(tree.json()["data"][0]["children"][0]["name"], "Child")
+            restricted = client.get("/api/admin/v1/organizations/tree", headers=manager,
+                                    params={"filters": condition})
+            self.assertEqual(restricted.json()["data"][0]["name"], "Child")
+            self.assertEqual(client.get("/api/admin/v1/organizations", headers=manager,
+                                        params={"filters": json.dumps({"mode": "or", "conditions": [
+                                            {"field": "name", "operator": "eq", "value": "Root"},
+                                            {"field": "name", "operator": "eq", "value": "Child"},
+                                        ]})}).json()["data"]["total"], 1)
+        finally:
+            app.dependency_overrides.clear()
 
     def test_group_membership_does_not_grant_organization_access(self):
         self.db.add(UserGroup(

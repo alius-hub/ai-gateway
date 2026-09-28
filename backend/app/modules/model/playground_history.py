@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.list_filters import filter_expression
 from app.core.responses import success_response
 from app.db.models import PlaygroundRecord, User
 from app.db.session import get_db
@@ -141,9 +142,22 @@ def serialize(record: PlaygroundRecord, detail: bool = False) -> dict:
 
 @router.get("")
 def list_history(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+                 filters: str | None = Query(None, max_length=4096),
                  db: Session = Depends(get_db), user: User = Depends(actor)) -> dict:
     require_platform(user)
     query = select(PlaygroundRecord).where(PlaygroundRecord.user_id == user.id)
+    if filters:
+        expression = filter_expression(filters, {
+            "created_at": (PlaygroundRecord.created_at, "date"),
+            "model_code": (PlaygroundRecord.model_code, "text"),
+            "source": (PlaygroundRecord.source, "text"),
+            "mode": (PlaygroundRecord.mode, "select", {"conversation", "raw"}),
+            "stream": (PlaygroundRecord.stream, "boolean", {"0", "1"}),
+            "http_status": (PlaygroundRecord.http_status, "number"),
+            "latency_ms": (PlaygroundRecord.latency_ms, "number"),
+        })
+        if expression is not None:
+            query = query.where(expression)
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     records = db.scalars(query.order_by(PlaygroundRecord.id.desc())
                          .offset((page - 1) * page_size).limit(page_size)).all()
