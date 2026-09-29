@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.admin.router import admin_router
 from app.api.gateway.router import gateway_router
 from app.core.config import get_settings
+from app.modules.audit.events import AuditMiddleware
 from app.modules.gateway.archive import CallArchiveMiddleware, archive_worker
 from app.schemas.common import HealthCheckResponse
 
@@ -43,6 +44,7 @@ def create_application() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(CallArchiveMiddleware)
+    app.add_middleware(AuditMiddleware)
 
     @app.get("/health", tags=["System"], response_model=HealthCheckResponse)
     async def health_check() -> HealthCheckResponse:

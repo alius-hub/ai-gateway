@@ -1,4 +1,5 @@
 from app.db.models.core import (
+    AuditEvent,
     AggregatedModel,
     AggregateModelNodeBinding,
     ApiKey,
@@ -23,6 +24,7 @@ from app.db.models.core import (
 )
 
 __all__ = [
+    "AuditEvent",
     "AggregateModelNodeBinding",
     "AggregatedModel",
     "ApiKey",

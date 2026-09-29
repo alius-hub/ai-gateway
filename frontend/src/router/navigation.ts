@@ -82,7 +82,7 @@ export const navigation: NavigationGroup[] = [
     label: "日志中心",
     items: [
       { label: "调用日志", path: "/logs", description: "查询网关调用、响应及用量记录。" },
-      { label: "审计日志", path: "/logs/audit", planned: true, description: "追踪平台配置和管理操作。" },
+      { label: "审计日志", path: "/logs/audit", description: "追踪平台配置和管理操作。" },
       { label: "安全日志", path: "/logs/security", planned: true, description: "查询安全策略命中和拦截事件。" },
     ],
   },

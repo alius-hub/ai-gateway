@@ -2,6 +2,37 @@ import { http } from "@/api/http";
 import type { ApiEnvelope } from "@/types/api";
 import { encodeFilter, type FilterGroup } from "@/types/filter";
 
+export interface AuditEvent {
+  id: number;
+  actor_user_id: number | null;
+  actor_username: string;
+  action: string;
+  resource: string;
+  method: string;
+  path: string;
+  ip_address: string | null;
+  status_code: number;
+  created_at: string;
+}
+
+export async function listAuditResources(): Promise<string[]> {
+  const response = await http.get<ApiEnvelope<string[]>, ApiEnvelope<string[]>>(
+    "/logs/audit-resources",
+  );
+  return response.data;
+}
+
+export async function listAuditEvents(page: number, pageSize: number, query: {
+  actor_user_id?: number; action?: string; resource?: string;
+  start_time?: string; end_time?: string;
+}, filters?: FilterGroup): Promise<{ items: AuditEvent[]; total: number; page: number; page_size: number }> {
+  const response = await http.get<ApiEnvelope<{ items: AuditEvent[]; total: number; page: number; page_size: number }>,
+    ApiEnvelope<{ items: AuditEvent[]; total: number; page: number; page_size: number }>>(
+    "/logs/audit-events", { params: { page, page_size: pageSize, ...query, filters: encodeFilter(filters) } },
+  );
+  return response.data;
+}
+
 export interface CallLog {
   request_id: string;
   created_at: string;

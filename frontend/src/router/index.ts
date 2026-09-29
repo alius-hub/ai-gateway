@@ -13,6 +13,7 @@ import ProviderView from "@/views/ProviderView.vue";
 import PlaygroundView from "@/views/PlaygroundView.vue";
 import CredentialView from "@/views/CredentialView.vue";
 import CallLogsView from "@/views/CallLogsView.vue";
+import AuditLogsView from "@/views/AuditLogsView.vue";
 import CostAnalyticsView from "@/views/CostAnalyticsView.vue";
 import PerformanceAnalyticsView from "@/views/PerformanceAnalyticsView.vue";
 import UsageAnalyticsView from "@/views/UsageAnalyticsView.vue";
@@ -144,6 +145,11 @@ const routes: RouteRecordRaw[] = [
         path: "/logs",
         component: CallLogsView,
         meta: { title: "调用日志", section: "日志中心", description: "查询请求、用量和原始归档。" },
+      },
+      {
+        path: "/logs/audit",
+        component: AuditLogsView,
+        meta: { title: "审计日志", section: "日志中心", description: "查询平台管理操作。" },
       },
       {
         path: "/analytics/usage",

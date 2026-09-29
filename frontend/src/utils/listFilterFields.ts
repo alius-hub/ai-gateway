@@ -103,6 +103,23 @@ export const listFilterFields: Record<string, FilterField[]> = {
     number("http_status", "状态码"), number("latency_ms", "耗时"),
     number("total_tokens", "Token"), text("error_code", "错误码"),
   ],
+  "audit-events": [
+    id, { key: "created_at", label: "时间", type: "date" },
+    number("actor_user_id", "操作人 ID"), text("actor_username", "操作人"),
+    select("action", "动作", [
+      { label: "登录", value: "login" }, { label: "创建", value: "create" },
+      { label: "更新", value: "update" }, { label: "删除", value: "delete" },
+      { label: "轮换 Key", value: "rotate" },
+      { label: "重置密码", value: "reset_password" },
+    ]),
+    text("resource", "资源"),
+    select("method", "请求方法", [
+      { label: "POST", value: "POST" }, { label: "PUT", value: "PUT" },
+      { label: "PATCH", value: "PATCH" }, { label: "DELETE", value: "DELETE" },
+    ]),
+    text("path", "请求路径"), text("ip_address", "来源 IP"),
+    number("status_code", "结果状态码"),
+  ],
   history: [
     { key: "created_at", label: "时间", type: "date" },
     text("model_code", "模型"), text("source", "来源"),

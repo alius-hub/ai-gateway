@@ -6,7 +6,7 @@ import base64
 import binascii
 import json
 import re
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -18,12 +18,97 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.list_filters import filter_expression
 from app.core.responses import success_response
-from app.db.models import RequestLog, UsageRecord, User
+from app.db.models import AuditEvent, RequestLog, UsageRecord, User
 from app.db.session import get_db
 from app.modules.gateway.archive import s3_client
 from app.modules.identity.router import actor, require_platform
 
 router = APIRouter(prefix="/logs", tags=["日志审计"])
+
+
+@router.get("/audit-actors")
+def list_audit_actors(
+    db: Session = Depends(get_db), user: User = Depends(actor),
+) -> dict:
+    require_platform(user)
+    rows = db.execute(
+        select(AuditEvent.actor_user_id, func.max(AuditEvent.actor_username))
+        .where(AuditEvent.actor_user_id.is_not(None))
+        .group_by(AuditEvent.actor_user_id)
+        .order_by(func.max(AuditEvent.actor_username), AuditEvent.actor_user_id)
+    ).all()
+    return success_response([
+        {"id": actor_id, "username": username} for actor_id, username in rows
+    ]).model_dump()
+
+
+@router.get("/audit-resources")
+def list_audit_resources(
+    db: Session = Depends(get_db), user: User = Depends(actor),
+) -> dict:
+    require_platform(user)
+    resources = db.scalars(
+        select(AuditEvent.resource).distinct().order_by(AuditEvent.resource)
+    ).all()
+    return success_response(resources).model_dump()
+
+
+@router.get("/audit-events")
+def list_audit_events(
+    page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+    actor_user_id: int | None = None, action: str | None = None,
+    resource: str | None = None, start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    filters: str | None = Query(None, max_length=4096),
+    db: Session = Depends(get_db),
+    user: User = Depends(actor),
+) -> dict:
+    require_platform(user)
+    if start_time and end_time and start_time > end_time:
+        raise HTTPException(422, "开始时间不能晚于结束时间。")
+    statement = select(AuditEvent)
+    if actor_user_id is not None:
+        statement = statement.where(AuditEvent.actor_user_id == actor_user_id)
+    if action:
+        statement = statement.where(AuditEvent.action == action)
+    if resource:
+        statement = statement.where(AuditEvent.resource == resource)
+    if start_time:
+        statement = statement.where(AuditEvent.created_at >= start_time)
+    if end_time:
+        statement = statement.where(AuditEvent.created_at <= end_time)
+    if filters:
+        expression = filter_expression(filters, {
+            "id": (AuditEvent.id, "number"),
+            "created_at": (AuditEvent.created_at, "date"),
+            "actor_user_id": (AuditEvent.actor_user_id, "number"),
+            "actor_username": (AuditEvent.actor_username, "text"),
+            "action": (AuditEvent.action, "select", {
+                "login", "create", "update", "delete", "rotate", "reset_password",
+            }),
+            "resource": (AuditEvent.resource, "text"),
+            "method": (AuditEvent.method, "select", {"POST", "PUT", "PATCH", "DELETE"}),
+            "path": (AuditEvent.path, "text"),
+            "ip_address": (AuditEvent.ip_address, "text"),
+            "status_code": (AuditEvent.status_code, "number"),
+        })
+        if expression is not None:
+            statement = statement.where(expression)
+    total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    items = db.scalars(statement.order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
+                       .offset((page - 1) * page_size).limit(page_size)).all()
+    return success_response({
+        "items": [{
+            "id": item.id, "actor_user_id": item.actor_user_id,
+            "actor_username": item.actor_username, "action": item.action,
+            "resource": item.resource, "method": item.method, "path": item.path,
+            "ip_address": item.ip_address, "status_code": item.status_code,
+            "created_at": item.created_at.isoformat(),
+        } for item in items],
+        "page": page, "page_size": page_size, "total": total,
+    }).model_dump()
+
+
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 IMAGE_DATA = re.compile(r"^data:(image/(?:png|jpeg|gif|webp|avif));base64,([A-Za-z0-9+/=]+)$",
