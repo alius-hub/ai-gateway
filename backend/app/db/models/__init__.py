@@ -1,8 +1,12 @@
 from app.db.models.core import (
-    AuditEvent,
     AggregatedModel,
     AggregateModelNodeBinding,
+    AlertDelivery,
+    AlertEvent,
+    AlertRule,
     ApiKey,
+    AuditEvent,
+    FeishuSettings,
     GatewayLogSettings,
     ModelNode,
     Organization,
@@ -24,10 +28,14 @@ from app.db.models.core import (
 )
 
 __all__ = [
+    "AlertDelivery",
+    "AlertEvent",
+    "AlertRule",
     "AuditEvent",
     "AggregateModelNodeBinding",
     "AggregatedModel",
     "ApiKey",
+    "FeishuSettings",
     "GatewayLogSettings",
     "ModelNode",
     "Organization",

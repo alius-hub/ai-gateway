@@ -89,7 +89,7 @@ export const navigation: NavigationGroup[] = [
   {
     id: "alerts",
     label: "告警中心",
-    items: [{ label: "告警与通知", path: "/alerts", planned: true, description: "管理告警规则、事件和通知渠道。" }],
+    items: [{ label: "告警与通知", path: "/alerts", description: "管理告警规则、事件和飞书通知。" }],
   },
   {
     id: "mcp",

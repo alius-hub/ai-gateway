@@ -18,6 +18,7 @@ import CostAnalyticsView from "@/views/CostAnalyticsView.vue";
 import PerformanceAnalyticsView from "@/views/PerformanceAnalyticsView.vue";
 import UsageAnalyticsView from "@/views/UsageAnalyticsView.vue";
 import PlatformSettingsView from "@/views/PlatformSettingsView.vue";
+import AlertsView from "@/views/AlertsView.vue";
 
 import { navigation } from "./navigation";
 
@@ -170,6 +171,11 @@ const routes: RouteRecordRaw[] = [
         path: "/settings",
         component: PlatformSettingsView,
         meta: { title: "平台设置", section: "系统设置", description: "配置日志图片归档策略。" },
+      },
+      {
+        path: "/alerts",
+        component: AlertsView,
+        meta: { title: "告警与通知", section: "告警中心" },
       },
       ...plannedRoutes,
     ],

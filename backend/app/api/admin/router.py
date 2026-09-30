@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.modules.alerts import router as alerts_router
 from app.modules.analytics import router as analytics_router
 from app.modules.audit.router import router as audit_router
 from app.modules.audit.settings import router as log_settings_router
@@ -15,6 +16,7 @@ from app.modules.routing.router import router as routing_router
 
 admin_router = APIRouter()
 admin_router.include_router(auth_router)
+admin_router.include_router(alerts_router)
 admin_router.include_router(overview_router)
 admin_router.include_router(analytics_router)
 admin_router.include_router(credential_router)

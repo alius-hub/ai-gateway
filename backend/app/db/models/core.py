@@ -390,3 +390,64 @@ class GatewayLogSettings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     image_mode: Mapped[str] = mapped_column(String(24), default="content_only")
+
+
+class FeishuSettings(Base):
+    __tablename__ = "feishu_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    app_id: Mapped[str] = mapped_column(String(128))
+    app_secret_ciphertext: Mapped[str] = mapped_column(Text)
+    chat_id: Mapped[str] = mapped_column(String(128))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class AlertRule(TimestampMixin, Base):
+    __tablename__ = "alert_rules"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    metric: Mapped[str] = mapped_column(String(32))
+    scope_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    threshold: Mapped[Decimal] = mapped_column(Numeric(8, 2))
+    window_minutes: Mapped[int] = mapped_column(Integer, default=5)
+    min_samples: Mapped[int] = mapped_column(Integer, default=10)
+    level: Mapped[str] = mapped_column(String(16), default="warning")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    suppressed_until_recovery: Mapped[bool] = mapped_column(Boolean, default=False)
+    recipients: Mapped[list] = mapped_column(JSONB, default=list)
+
+
+class AlertEvent(Base):
+    __tablename__ = "alert_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    rule_id: Mapped[int] = mapped_column(ForeignKey("alert_rules.id"), index=True)
+    recipients: Mapped[list] = mapped_column(JSONB, default=list)
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    current_value: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    threshold: Mapped[Decimal] = mapped_column(Numeric(8, 2))
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AlertDelivery(Base):
+    __tablename__ = "alert_deliveries"
+    __table_args__ = (UniqueConstraint(
+        "event_id", "kind", "receive_id_type", "receive_id",
+        name="uq_alert_delivery_target",
+    ),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("alert_events.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    receive_id_type: Mapped[str] = mapped_column(String(16), default="chat_id")
+    receive_id: Mapped[str] = mapped_column(String(128), default="")
+    current_value: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

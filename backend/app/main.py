@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.admin.router import admin_router
 from app.api.gateway.router import gateway_router
 from app.core.config import get_settings
+from app.modules.alerts import alert_worker
 from app.modules.audit.events import AuditMiddleware
 from app.modules.gateway.archive import CallArchiveMiddleware, archive_worker
 from app.schemas.common import HealthCheckResponse
@@ -18,9 +19,13 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     worker = asyncio.create_task(archive_worker()) if settings.log_archive_enabled else None
+    alert_task = asyncio.create_task(alert_worker())
     try:
         yield
     finally:
+        alert_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await alert_task
         if worker:
             worker.cancel()
             with suppress(asyncio.CancelledError):
