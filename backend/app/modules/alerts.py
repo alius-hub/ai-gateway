@@ -401,14 +401,24 @@ def test_feishu(db: Session = Depends(get_db), user: User = Depends(actor)) -> d
 
 @router.get("/rules")
 def list_rules(filters: str | None = Query(None, max_length=4096),
+               page: int | None = Query(None, ge=1),
+               page_size: int = Query(20, ge=1, le=100),
                db: Session = Depends(get_db), user: User = Depends(actor)) -> dict:
     require_platform(user)
     query = select(AlertRule)
     expression = filter_expression(filters, _filter_columns())
     if expression is not None:
         query = query.where(expression)
-    return success_response([_rule_data(r) for r in db.scalars(
-        query.order_by(AlertRule.id.desc()))]).model_dump(mode="json")
+    if page is None:
+        return success_response([_rule_data(r) for r in db.scalars(
+            query.order_by(AlertRule.id.desc()))]).model_dump(mode="json")
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    rows = db.scalars(query.order_by(AlertRule.id.desc()).offset(
+        (page - 1) * page_size).limit(page_size)).all()
+    return success_response({
+        "items": [_rule_data(r) for r in rows],
+        "total": total, "page": page, "page_size": page_size,
+    }).model_dump(mode="json")
 
 
 @router.post("/rules/{rule_id}/test")

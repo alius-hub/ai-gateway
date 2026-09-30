@@ -61,6 +61,7 @@ function applyFilters(value: FilterGroup) {
     void loadEvents();
   } else {
     ruleFilters.value = value;
+    rulePage.value = 1;
     void loadRules();
   }
 }
@@ -70,6 +71,11 @@ const deliveries = ref<Delivery[]>([]);
 const selectedEvent = ref<number | null>(null);
 const page = ref(1);
 const total = ref(0);
+const pageSize = ref(20);
+const rulePage = ref(1);
+const rulePageSize = ref(20);
+const ruleTotal = ref(0);
+const rulesLoading = ref(false);
 const status = ref("all");
 const loading = ref(false);
 const saving = ref(false);
@@ -148,10 +154,12 @@ async function loadEvents() {
   selectedEvent.value = null;
   deliveries.value = [];
   try {
-    const result = await listAlertEvents(page.value, status.value === "all" ? undefined : status.value, eventFilters.value);
+    const result = await listAlertEvents(page.value, status.value === "all" ? undefined : status.value, eventFilters.value, pageSize.value);
     if (disposed || current !== generation) return;
     events.value = result.items;
     total.value = result.total;
+    const lastPage = Math.max(1, Math.ceil(result.total / pageSize.value));
+    if (page.value > lastPage) { page.value = lastPage; await loadEvents(); }
   } catch {
     if (!disposed && current === generation) showToast("error", "加载告警事件失败");
   } finally {
@@ -161,13 +169,32 @@ async function loadEvents() {
 
 async function loadRules() {
   const current = ++ruleGeneration;
+  rulesLoading.value = true;
   rules.value = [];
   try {
-    const result = await listAlertRules(ruleFilters.value);
-    if (!disposed && current === ruleGeneration) rules.value = result;
+    const result = await listAlertRules(rulePage.value, rulePageSize.value, ruleFilters.value);
+    if (disposed || current !== ruleGeneration) return;
+    rules.value = result.items;
+    ruleTotal.value = result.total;
+    const lastPage = Math.max(1, Math.ceil(result.total / rulePageSize.value));
+    if (rulePage.value > lastPage) { rulePage.value = lastPage; await loadRules(); }
   } catch {
     if (!disposed && current === ruleGeneration) showToast("error", "加载告警规则失败");
+  } finally {
+    if (current === ruleGeneration) rulesLoading.value = false;
   }
+}
+
+function changeEventPageSize(value: number) {
+  pageSize.value = value;
+  page.value = 1;
+  void loadEvents();
+}
+
+function changeRulePageSize(value: number) {
+  rulePageSize.value = value;
+  rulePage.value = 1;
+  void loadRules();
 }
 
 async function openSettings() {
@@ -370,11 +397,12 @@ void loadProjects();
               <td>{{ rule.enabled ? '启用' : '停用' }}</td>
               <td class="actions"><button type="button" @click="openRule(rule)">编辑</button><button type="button" :disabled="testingRuleId !== null" @click="pushRuleTest(rule)">{{ testingRuleId === rule.id ? '推送中...' : '测试推送' }}</button><button class="danger-action" type="button" @click="deleteTarget = rule">删除</button></td>
             </tr>
-            <tr v-if="!rules.length"><td colspan="9" class="empty">暂无规则，点击右上角新增</td></tr>
+            <tr v-if="!rules.length"><td colspan="9" class="empty">{{ rulesLoading ? '正在加载...' : '暂无告警规则' }}</td></tr>
           </tbody>
         </table>
       </div>
-      <AppPagination v-if="tab === 'events' && total > 0" v-model="page" :total="total" :page-size="20" @change="loadEvents" />
+      <AppPagination v-if="tab === 'events'" v-model="page" :total="total" :page-size="pageSize" :disabled="loading" @change="loadEvents" @update:page-size="changeEventPageSize" />
+      <AppPagination v-else v-model="rulePage" :total="ruleTotal" :page-size="rulePageSize" :disabled="rulesLoading" @change="loadRules" @update:page-size="changeRulePageSize" />
     </div>
 
     <div v-if="settingsOpen" class="app-modal-overlay" @click.self="closeSettings">

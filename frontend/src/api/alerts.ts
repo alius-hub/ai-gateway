@@ -29,10 +29,10 @@ async function post<T>(path: string, payload?: object): Promise<T> {
   return result.data;
 }
 
-export const listAlertRules = (filters?: FilterGroup) =>
-  get<AlertRule[]>("/alerts/rules", { filters: encodeFilter(filters) });
-export const listAlertEvents = (page: number, status?: string, filters?: FilterGroup) =>
-  get<{ items: AlertEvent[]; total: number }>("/alerts/events", { page, page_size: 20, status: status || undefined, filters: encodeFilter(filters) });
+export const listAlertRules = (page: number, pageSize: number, filters?: FilterGroup) =>
+  get<{ items: AlertRule[]; total: number }>("/alerts/rules", { page, page_size: pageSize, filters: encodeFilter(filters) });
+export const listAlertEvents = (page: number, status?: string, filters?: FilterGroup, pageSize = 20) =>
+  get<{ items: AlertEvent[]; total: number }>("/alerts/events", { page, page_size: pageSize, status: status || undefined, filters: encodeFilter(filters) });
 export const getFeishuConfig = () => get<FeishuConfig>("/alerts/settings/feishu");
 export const saveFeishuConfig = (payload: { app_id: string; app_secret?: string; chat_id: string; enabled: boolean }) =>
   http.put("/alerts/settings/feishu", payload);

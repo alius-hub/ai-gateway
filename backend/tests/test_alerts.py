@@ -269,6 +269,22 @@ class AlertsTest(unittest.TestCase):
                                  headers=self.admin)
         self.assertEqual(result.status_code, 200)
         self.assertEqual([item["name"] for item in result.json()["data"]], ["disabled rule"])
+        rule_group = {"mode": "and", "conditions": [
+            {"field": "level", "operator": "eq", "value": "warning"},
+        ]}
+        for page, expected in ((1, "disabled rule"), (2, "resolved rule")):
+            result = self.client.get(base + "/rules", params={
+                "filters": json.dumps(rule_group), "page": page, "page_size": 1,
+            }, headers=self.admin)
+            self.assertEqual(result.status_code, 200)
+            data = result.json()["data"]
+            self.assertEqual(data["total"], 2)
+            self.assertEqual(data["page"], page)
+            self.assertEqual(data["page_size"], 1)
+            self.assertEqual([item["name"] for item in data["items"]], [expected])
+        for params in ({"page": 0}, {"page": 1, "page_size": 101}):
+            self.assertEqual(self.client.get(base + "/rules", params=params,
+                                             headers=self.admin).status_code, 422)
         group = {"mode": "or", "conditions": [
             {"field": "level", "operator": "eq", "value": "critical"},
             {"field": "current_value", "operator": "gt", "value": "80"},
