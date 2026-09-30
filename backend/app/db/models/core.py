@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -123,6 +124,10 @@ class UserGroupMember(TimestampMixin, Base):
 
 class ApiKey(TimestampMixin, Base):
     __tablename__ = "api_keys"
+    __table_args__ = (
+        Index("ix_api_keys_scope_project_id", "scope_type", "project_id", "id"),
+        Index("ix_api_keys_scope_user_id", "scope_type", "user_id", "id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     organization_id: Mapped[int | None] = mapped_column(
@@ -340,8 +345,19 @@ class RequestLog(Base):
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
 
+class GatewaySpend(Base):
+    __tablename__ = "gateway_spend"
+
+    scope: Mapped[str] = mapped_column(String(16), primary_key=True)
+    scope_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    period_kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    period_stamp: Mapped[str] = mapped_column(String(8), primary_key=True)
+    spent_cents: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+
 class UsageRecord(Base):
     __tablename__ = "usage_records"
+    __table_args__ = (Index("ix_usage_records_key_created_at", "api_key_id", "created_at"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     request_log_id: Mapped[int] = mapped_column(ForeignKey("request_logs.id"), unique=True)

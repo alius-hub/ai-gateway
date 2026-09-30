@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     env: str = Field(default="dev")
     debug: bool = Field(default=True)
     app_port: int = Field(default=8001)
+    database_pool_size: int = Field(default=5, ge=1)
+    database_max_overflow: int = Field(default=10, ge=0)
+    database_pool_timeout: float = Field(default=5, gt=0)
+    gateway_max_concurrency: int = Field(default=100, ge=1)
+    gateway_model_concurrency: int = Field(default=100, ge=1)
+    gateway_provider_concurrency: int = Field(default=200, ge=1)
+    gateway_lease_seconds: int = Field(default=120, ge=15)
+    http_max_connections: int = Field(default=200, ge=1)
+    http_max_keepalive_connections: int = Field(default=100, ge=0)
+    redis_max_connections: int = Field(default=200, ge=1)
     api_prefix: str = "/api"
     admin_api_prefix: str = "/api/admin/v1"
     gateway_api_prefix: str = "/v1"

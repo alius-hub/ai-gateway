@@ -29,6 +29,7 @@ from app.db.models import (
     AggregatedModel,
     ApiKey,
     GatewayLogSettings,
+    GatewaySpend,
     Organization,
     Project,
     ProjectMember,
@@ -71,6 +72,7 @@ class GatewayTest(unittest.TestCase):
             ProviderProtocol.__table__, ProviderModel.__table__, AggregatedModel.__table__,
             ApiKey.__table__, RequestLog.__table__, UsageRecord.__table__,
             GatewayLogSettings.__table__,
+            GatewaySpend.__table__,
         ])
         self.db = Session(self.engine)
         self.raw = "agw_" + "a" * 40
@@ -140,7 +142,10 @@ class GatewayTest(unittest.TestCase):
                                  return_value=disabled)
         self.archive_patch.start()
         self.audit_patch.start()
-        app.dependency_overrides[get_db] = lambda: self.db
+        def request_db():
+            with Session(self.engine) as db:
+                yield db
+        app.dependency_overrides[get_db] = request_db
         self.client = TestClient(app)
         self.headers = {"Authorization": f"Bearer {self.raw}"}
         self.body = {"model": "public-chat", "messages": [{"role": "user", "content": "hello"}],
@@ -243,6 +248,31 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(price_cents(model, 1, 0), 1)
         model.price_unit_k = 2
         self.assertEqual(price_cents(model, 1, 0), 0)
+
+    def test_upstream_capacity_rejection_refunds_budget_and_tokens(self):
+        from app.modules.gateway.runtime import ACQUIRE, RELEASE
+
+        model = self.db.get(ProviderModel, 1)
+        model.input_price = model.output_price = Decimal("1")
+        self.db.get(Project, 1).amount_budget = Decimal("0.02")
+        self.db.get(ApiKey, 1).qps_limit = None
+        self.db.commit()
+        keys = ["gateway:concurrency:model:1", "gateway:concurrency:provider:1"]
+        asyncio.run(self.fake.eval(ACQUIRE, 2, *keys, "occupied", 120000, 1, 200))
+        settings = get_settings().model_copy(update={"gateway_model_concurrency": 1})
+        with patch("app.modules.gateway.runtime.get_settings", return_value=settings):
+            denied = self.client.post("/v1/chat/completions", json=self.body,
+                                      headers=self.headers)
+        self.assertEqual(denied.status_code, 503, denied.text)
+        self.assertEqual(denied.json()["error"]["code"], "upstream_concurrency_exceeded")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(asyncio.run(self.fake.get("gateway:project:1:amount")), b"0")
+        self.assertEqual(asyncio.run(self.fake.zcard(keys[0])), 1)
+        self.assertEqual(self.db.query(UsageRecord).count(), 0)
+        asyncio.run(self.fake.eval(RELEASE, 2, *keys, "occupied"))
+        accepted = self.client.post("/v1/chat/completions", json=self.body,
+                                    headers=self.headers)
+        self.assertEqual(accepted.status_code, 200, accepted.text)
 
     def test_tiered_prices_select_input_and_output_independently(self):
         model = self.db.get(ProviderModel, 1)

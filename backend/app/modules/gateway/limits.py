@@ -134,8 +134,13 @@ def cooldown_key(model_id: int) -> str:
 
 
 class Limiter:
-    def __init__(self, client: redis.Redis):
+    def __init__(self, client: redis.Redis, *, shared: bool = False):
         self.client = client
+        self.shared = shared
+
+    async def close(self) -> None:
+        if not self.shared:
+            await self.client.aclose()
 
     def keys(self, key: ApiKey, now: datetime) -> tuple[list[str], int, int, int]:
         stamp = int(now.timestamp() * 1000)
@@ -207,8 +212,14 @@ class Limiter:
 
 
 def limiter() -> Limiter:
+    from app.modules.gateway.runtime import current_runtime
+
+    runtime = current_runtime.get()
+    if runtime is not None:
+        return Limiter(runtime.redis, shared=True)
     return Limiter(redis.from_url(
         get_settings().redis_url, decode_responses=False,
+        max_connections=get_settings().redis_max_connections,
         socket_connect_timeout=2, socket_timeout=2,
     ))
 

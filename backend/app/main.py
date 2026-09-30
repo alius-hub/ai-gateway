@@ -11,13 +11,15 @@ from app.core.config import get_settings
 from app.modules.alerts import alert_worker
 from app.modules.audit.events import AuditMiddleware
 from app.modules.gateway.archive import CallArchiveMiddleware, archive_worker
+from app.modules.gateway.runtime import Runtime, RuntimeMiddleware
 from app.schemas.common import HealthCheckResponse
 
 settings = get_settings()
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(application: FastAPI):
+    application.state.gateway_runtime = Runtime()
     worker = asyncio.create_task(archive_worker()) if settings.log_archive_enabled else None
     alert_task = asyncio.create_task(alert_worker())
     try:
@@ -30,6 +32,8 @@ async def lifespan(_: FastAPI):
             worker.cancel()
             with suppress(asyncio.CancelledError):
                 await worker
+        await application.state.gateway_runtime.close()
+        del application.state.gateway_runtime
 
 
 def create_application() -> FastAPI:
@@ -50,6 +54,7 @@ def create_application() -> FastAPI:
     )
     app.add_middleware(CallArchiveMiddleware)
     app.add_middleware(AuditMiddleware)
+    app.add_middleware(RuntimeMiddleware)
 
     @app.get("/health", tags=["System"], response_model=HealthCheckResponse)
     async def health_check() -> HealthCheckResponse:

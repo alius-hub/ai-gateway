@@ -13,12 +13,13 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from anyio import CancelScope
+from anyio import CancelScope, to_thread
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from redis.exceptions import RedisError
-from sqlalchemy import func, select
+from sqlalchemy import select
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.orm import Session
 
 from app.db.models import (
@@ -37,9 +38,12 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.modules.gateway.adapters import normalize, prepare, reasoning_count, usage_counts
-from app.modules.gateway.limits import Limiter, cooldown_key, limiter, period, unavailable
+from app.modules.gateway.budgets import baselines as budget_baselines
+from app.modules.gateway.budgets import increment
+from app.modules.gateway.limits import Limiter, cooldown_key, limiter, unavailable
 from app.modules.gateway.pricing import cents as price_cents
 from app.modules.gateway.pricing import priced
+from app.modules.gateway.runtime import upstream_client
 from app.modules.gateway.streaming import StreamUsage, events, translate
 from app.modules.model.playground import read_key
 from app.modules.routing.strategies import choose_model
@@ -93,7 +97,7 @@ def error(status: int, code: str, message: str) -> JSONResponse:
                         status_code=status)
 
 
-def authenticate(request: Request, db: Session = Depends(get_db)) -> ApiKey:
+def authenticate_raw(request: Request, db: Session) -> ApiKey:
     auth = request.headers.get("authorization")
     raw = (
         auth[7:] if auth and auth.lower().startswith("bearer ")
@@ -138,6 +142,21 @@ def authenticate(request: Request, db: Session = Depends(get_db)) -> ApiKey:
         if org is None or org.status != 1 or org.deleted_at is not None:
             raise HTTPException(403, "organization_forbidden")
     return key
+
+
+def database_phase(db: Session, operation, *args):
+    """Detach snapshots and release the connection before returning to async code."""
+    try:
+        return operation(*args)
+    except PoolTimeout as exc:
+        raise HTTPException(503, "database_capacity_exceeded") from exc
+    finally:
+        db.expunge_all()
+        db.close()
+
+
+def authenticate(request: Request, db: Session = Depends(get_db)) -> ApiKey:
+    return database_phase(db, authenticate_raw, request, db)
 
 
 def authorized_models(db: Session, key: ApiKey, model_name: str,
@@ -292,31 +311,13 @@ def has_output_fragment(protocol: str, event: str, data: str, fragment: bytes | 
     )
 
 
-def budget_baselines(db: Session, key: ApiKey, project: Project | None) -> tuple[int, int]:
-    def spent(*conditions) -> int:
-        amount = db.scalar(select(func.sum(UsageRecord.estimated_cost)).where(
-            UsageRecord.currency == "CNY", *conditions,
-        )) or Decimal("0")
-        return int(amount * 100)
-
-    project_spent = (
-        spent(UsageRecord.project_id == project.id)
-        if project and project.amount_budget is not None else 0
-    )
-    key_spent = 0
-    if key.amount_budget is not None:
-        stamp, _ = period(datetime.now(UTC), key.budget_period)
-        start = datetime.strptime(stamp, "%Y%m%d")
-        key_spent = spent(UsageRecord.api_key_id == key.id, UsageRecord.created_at >= start)
-    return key_spent, project_spent
-
-
-def record(db: Session, request: Request, key: ApiKey, model: ProviderModel,
+def record_sync(db: Session, request: Request, key: ApiKey, model: ProviderModel,
            aggregate: AggregatedModel | None, status: int, latency: int, tokens: int,
            input_tokens: int | None, output_tokens: int | None, error_code: str | None,
            charged_cents: int = 0, reasoning_tokens: int | None = None,
            ttft_ms: int | None = None, tpot_ms: float | None = None,
            attempt_failure: bool = False, provider_status: str | None = None) -> None:
+    recorded_at = datetime.now(UTC)
     request_id = request.scope.setdefault(
         "gateway_request_id",
         request.scope["call_archive"].request_id
@@ -325,6 +326,7 @@ def record(db: Session, request: Request, key: ApiKey, model: ProviderModel,
     raw_key = request.headers.get("authorization", "").partition(" ")[2].strip()
     masked_key = f"{raw_key[:8]}****{raw_key[-4:]}" if len(raw_key) > 12 else None
     log = RequestLog(
+        created_at=recorded_at.replace(tzinfo=None),
         api_key_masked=masked_key,
         request_id=f"req_{uuid4().hex}" if attempt_failure else request_id,
         organization_id=key.organization_id,
@@ -342,6 +344,7 @@ def record(db: Session, request: Request, key: ApiKey, model: ProviderModel,
     db.flush()
     if tokens:
         db.add(UsageRecord(
+            created_at=recorded_at.replace(tzinfo=None),
             request_log_id=log.id, organization_id=key.organization_id,
             project_id=key.project_id, api_key_id=key.id,
             aggregate_model_id=aggregate.id if aggregate else None,
@@ -357,13 +360,21 @@ def record(db: Session, request: Request, key: ApiKey, model: ProviderModel,
             estimated_cost=Decimal(charged_cents) / 100 if priced(model) else None,
             currency=model.currency,
         ))
+    if tokens and priced(model):
+        increment(db, key, charged_cents, recorded_at)
     db.commit()
     if not attempt_failure:
         request.scope["db_recorded"] = True
 
 
+async def record(db: Session, *args, **kwargs) -> None:
+    def write():
+        return database_phase(db, lambda: record_sync(db, *args, **kwargs))
+    await to_thread.run_sync(write)
+
+
 @gateway_router.get("/models")
-async def list_models(db: Session = Depends(get_db), key: ApiKey = Depends(authenticate)) -> dict:
+def list_models(db: Session = Depends(get_db), key: ApiKey = Depends(authenticate)) -> dict:
     grants = key.allowed_models if isinstance(key.allowed_models, dict) else {}
     models = []
     for item in db.scalars(select(AggregatedModel).where(
@@ -376,6 +387,8 @@ async def list_models(db: Session = Depends(get_db), key: ApiKey = Depends(authe
     )):
         models.append({"id": item.access_model_code, "object": "model",
                        "owned_by": "ai-gateway", "model_type": item.model_type})
+    db.expunge_all()
+    db.close()
     return {"data": models}
 
 
@@ -389,7 +402,7 @@ async def queue_position(ticket: str, key: ApiKey = Depends(authenticate)) -> di
     except RedisError as exc:
         unavailable(exc)
     finally:
-        await service.client.aclose()
+        await service.close()
     if not position:
         raise HTTPException(404, "queue_ticket_not_found")
     return {"ticket": ticket, "position": position, "status": "waiting"}
@@ -402,15 +415,21 @@ async def stream_response(
     public_name: str,
     alternatives: list[tuple[ProviderModel, str, str, dict, dict, float]] | None = None,
 ) -> Response:
+    await to_thread.run_sync(database_phase, db, lambda: None)
     started = perf_counter()
     attempts = [(model, protocol, url, headers, upstream_body, timeout), *(alternatives or [])]
     archive = request.scope.get("call_archive")
     for index, attempt in enumerate(attempts):
         model, protocol, url, headers, upstream_body, timeout = attempt
-        client = httpx.AsyncClient(timeout=timeout, trust_env=False)
+        try:
+            client = await upstream_client(request, service, model)
+        except asyncio.CancelledError:
+            with CancelScope(shield=True):
+                await service.settle(reservation, 0, 0)
+            raise
         try:
             upstream_request = client.build_request(
-                "POST", url, headers=headers, json=upstream_body,
+                "POST", url, headers=headers, json=upstream_body, timeout=timeout,
             )
             if archive:
                 archive.upstream(upstream_request)
@@ -423,19 +442,19 @@ async def stream_response(
             code = "provider_timeout" if status == 504 else "provider_error"
             await cool_failed_model(service, aggregate, model)
             if index + 1 < len(attempts):
-                record(db, request, key, model, aggregate, status,
+                await record(db, request, key, model, aggregate, status,
                        round((perf_counter() - started) * 1000), 0, None, None, code,
                        attempt_failure=True)
                 continue
             await service.settle(reservation, 0, 0)
-            record(db, request, key, model, aggregate, status,
+            await record(db, request, key, model, aggregate, status,
                    round((perf_counter() - started) * 1000), 0, None, None, code)
             return error(status, code, code)
         except asyncio.CancelledError:
             with CancelScope(shield=True):
                 await client.aclose()
                 await service.settle(reservation, reservation.tokens, reservation.cents)
-                record(db, request, key, model, aggregate, 499,
+                await record(db, request, key, model, aggregate, 499,
                        round((perf_counter() - started) * 1000), reservation.tokens,
                        None, None, "client_disconnected", reservation.cents)
             raise
@@ -445,12 +464,12 @@ async def stream_response(
             await client.aclose()
             await cool_failed_model(service, aggregate, model)
             if index + 1 < len(attempts):
-                record(db, request, key, model, aggregate, 502,
+                await record(db, request, key, model, aggregate, 502,
                        round((perf_counter() - started) * 1000), 0, None, None,
                        "provider_error", attempt_failure=True, provider_status=upstream_status)
                 continue
             await service.settle(reservation, 0, 0)
-            record(db, request, key, model, aggregate, 502,
+            await record(db, request, key, model, aggregate, 502,
                    round((perf_counter() - started) * 1000), 0, None, None, "provider_error",
                    provider_status=upstream_status)
             return error(502, "provider_error", "provider_error")
@@ -460,12 +479,13 @@ async def stream_response(
         await client.aclose()
         await cool_failed_model(service, aggregate, model)
         await service.settle(reservation, reservation.tokens, reservation.cents)
-        record(db, request, key, model, aggregate, 502,
+        await record(db, request, key, model, aggregate, 502,
                round((perf_counter() - started) * 1000), reservation.tokens,
                None, None, "invalid_provider_stream", reservation.cents)
         return error(502, "invalid_provider_stream", "invalid_provider_stream")
 
     async def chunks():
+        client.owner = asyncio.current_task()
         usage = StreamUsage()
         status, code = 200, None
         first_output: float | None = None
@@ -507,7 +527,7 @@ async def stream_response(
                                     usage.output_tokens if usage.completed else None,
                                     reservation.cents)
                     await service.settle(reservation, actual, billed)
-                    record(db, request, key, model, aggregate, status,
+                    await record(db, request, key, model, aggregate, status,
                            round((finished - started) * 1000), actual,
                            usage.input_tokens if usage.completed else None,
                            usage.output_tokens if usage.completed else None, code, billed,
@@ -520,7 +540,7 @@ async def stream_response(
                            and usage.output_tokens is not None and usage.output_tokens > 1
                            else None)
                 finally:
-                    await service.client.aclose()
+                    await service.close()
         if status == 200 and usage.completed:
             yield b"data: [DONE]\n\n"
 
@@ -530,22 +550,45 @@ async def stream_response(
     )
 
 
-async def forward(request: Request, body: dict, kind: str, db: Session, key: ApiKey,
-                  ticket: str | None) -> Response:
-    round_index = next(rounds)
+
+def prepare_admission(db: Session, key: ApiKey, body: dict, kind: str, round_index: int):
     base_model, aggregate = authorized_models(
         db, key, body["model"], MODEL_TYPES[kind], round_index=round_index,
     )
     pool = retry_candidates(db, aggregate, base_model, round_index)
-    excluded: set[int] = set()
-    if aggregate is not None and aggregate.retry_on_failure:
-        probe = limiter()
-        try:
-            excluded = await cooling_models(probe, pool)
-        except RedisError as exc:
-            unavailable(exc)
-        finally:
-            await probe.client.aclose()
+    project = db.get(Project, key.project_id) if key.project_id else None
+    budgeted = key.amount_budget is not None or (
+        project is not None and project.amount_budget is not None
+    )
+    if budgeted and any(not priced(candidate) for candidate in pool):
+        raise HTTPException(503, "model_price_missing")
+    cost = token_estimate(body, kind)
+    output_estimate = body["max_tokens"] if kind == "chat" else 0
+    estimated_cents = max(
+        (price_cents(candidate, cost - output_estimate, output_estimate)
+         if priced(candidate) else 0 for candidate in pool), default=0,
+    )
+    key_spent, project_spent = budget_baselines(db, key, project)
+    options = {"cents": estimated_cents, "project_id": key.project_id,
+               "project_limit": int(project.amount_budget * 100)
+               if project is not None and project.amount_budget is not None else 0,
+               "money_baseline": key_spent, "project_baseline": project_spent}
+    return (base_model, aggregate, pool, options, base_model.id,
+            {candidate.id: price_signature(candidate) for candidate in pool})
+
+
+def prepare_attempts(db: Session, request: Request, body: dict, kind: str,
+                     round_index: int, base_model_id: int, price_snapshot: dict,
+                     excluded: set[int]):
+    key = authenticate_raw(request, db)
+    base_model, aggregate = authorized_models(
+        db, key, body["model"], MODEL_TYPES[kind], round_index=round_index,
+    )
+    pool = retry_candidates(db, aggregate, base_model, round_index)
+    if base_model.id != base_model_id or {
+        candidate.id: price_signature(candidate) for candidate in pool
+    } != price_snapshot:
+        raise HTTPException(409, "model_price_changed")
     if excluded:
         model, aggregate = authorized_models(
             db, key, body["model"], MODEL_TYPES[kind],
@@ -555,29 +598,40 @@ async def forward(request: Request, body: dict, kind: str, db: Session, key: Api
         model = base_model
     candidates = [item for item in retry_candidates(db, aggregate, model, round_index)
                   if item.id not in excluded]
+    attempts = []
+    for candidate in candidates:
+        try:
+            protocol, base, secret, timeout = connection(db, candidate)
+            url, headers, upstream_body = prepare(
+                protocol, base, candidate.provider_model_name, secret, body, kind,
+            )
+            if kind == "chat" and body["stream"] and protocol in ("openai", "openai_compatible"):
+                upstream_body["stream_options"] = {"include_usage": True}
+            attempts.append((candidate, protocol, url, headers, upstream_body, timeout))
+        except HTTPException as exc:
+            if len(candidates) == 1 or exc.status_code != 503:
+                raise
+    if not attempts:
+        raise HTTPException(503, "model_unavailable")
+    return key, aggregate, attempts
+
+
+async def forward(request: Request, body: dict, kind: str, db: Session, key: ApiKey,
+                  ticket: str | None) -> Response:
+    round_index = next(rounds)
+    try:
+        (base_model, aggregate, pool, money_options, base_model_id,
+         price_snapshot) = await to_thread.run_sync(
+            database_phase, db, prepare_admission, db, key, body, kind, round_index,
+        )
+    except HTTPException as exc:
+        return error(exc.status_code, str(exc.detail), str(exc.detail))
     cost = token_estimate(body, kind)
-    project = db.get(Project, key.project_id) if key.project_id else None
-    budgeted = key.amount_budget is not None or (
-        project is not None and project.amount_budget is not None
-    )
-    if budgeted and any(not priced(candidate) for candidate in pool):
-        return error(503, "model_price_missing", "Model requires CNY input and output pricing.")
-    output_estimate = body["max_tokens"] if kind == "chat" else 0
-    estimated_cents = max(
-        (price_cents(candidate, cost - output_estimate, output_estimate)
-         if priced(candidate) else 0 for candidate in pool), default=0,
-    )
-    key_spent, project_spent = budget_baselines(db, key, project)
-    money_options = {"cents": estimated_cents, "project_id": key.project_id,
-                     "project_limit": int(project.amount_budget * 100)
-                     if project is not None and project.amount_budget is not None else 0,
-                     "money_baseline": key_spent, "project_baseline": project_spent}
-    base_model_id = base_model.id
-    price_snapshot = {candidate.id: price_signature(candidate) for candidate in pool}
     digest = fingerprint(body)
     service: Limiter = limiter()
     reservation = None
     deferred_close = False
+    sent_upstream = False
     try:
         if key.wait_mode == "queue":
             state, rank, token, reservation = await service.admit(
@@ -600,43 +654,12 @@ async def forward(request: Request, body: dict, kind: str, db: Session, key: Api
             return error(400 if state == "invalid_ticket" else 429, code, code)
         assert reservation is not None
         try:
-            db.expire_all()
-            key = authenticate(request, db)
-            base_model, aggregate = authorized_models(
-                db, key, body["model"], MODEL_TYPES[kind], round_index=round_index,
-            )
-            pool = retry_candidates(db, aggregate, base_model, round_index)
-            if base_model.id != base_model_id or {
-                candidate.id: price_signature(candidate) for candidate in pool
-            } != price_snapshot:
-                raise HTTPException(409, "model_price_changed")
             excluded = (await cooling_models(service, pool)
                         if aggregate is not None and aggregate.retry_on_failure else set())
-            if excluded:
-                model, aggregate = authorized_models(
-                    db, key, body["model"], MODEL_TYPES[kind],
-                    round_index=round_index, excluded_ids=excluded,
-                )
-            else:
-                model = base_model
-            candidates = [item for item in retry_candidates(db, aggregate, model, round_index)
-                          if item.id not in excluded]
-            attempts = []
-            for candidate in candidates:
-                try:
-                    protocol, base, secret, timeout = connection(db, candidate)
-                    url, headers, upstream_body = prepare(
-                        protocol, base, candidate.provider_model_name, secret, body, kind,
-                    )
-                    if kind == "chat" and body["stream"] \
-                            and protocol in ("openai", "openai_compatible"):
-                        upstream_body["stream_options"] = {"include_usage": True}
-                    attempts.append((candidate, protocol, url, headers, upstream_body, timeout))
-                except HTTPException as exc:
-                    if len(candidates) == 1 or exc.status_code != 503:
-                        raise
-            if not attempts:
-                raise HTTPException(503, "model_unavailable")
+            key, aggregate, attempts = await to_thread.run_sync(
+                database_phase, db, prepare_attempts, db, request, body, kind,
+                round_index, base_model_id, price_snapshot, excluded,
+            )
         except Exception:
             await service.settle(reservation, 0, 0)
             raise
@@ -654,13 +677,14 @@ async def forward(request: Request, body: dict, kind: str, db: Session, key: Api
             status, payload, code, estimated, received_success = 502, None, None, False, False
             provider_status = None
             try:
-                async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+                async with await upstream_client(request, service, model) as client:
                     upstream_request = client.build_request(
-                        "POST", url, headers=headers, json=upstream_body,
+                        "POST", url, headers=headers, json=upstream_body, timeout=timeout,
                     )
                     archive = request.scope.get("call_archive")
                     if archive:
                         archive.upstream(upstream_request)
+                    sent_upstream = True
                     response = await client.send(upstream_request)
                     if archive:
                         archive.upstream_response(response)
@@ -690,7 +714,7 @@ async def forward(request: Request, body: dict, kind: str, db: Session, key: Api
             if code is not None and aggregate is not None and aggregate.retry_on_failure:
                 await cool_failed_model(service, aggregate, model)
             if code in ("provider_error", "provider_timeout") and index + 1 < len(attempts):
-                record(db, request, key, model, aggregate, status,
+                await record(db, request, key, model, aggregate, status,
                        round((perf_counter() - attempt_started) * 1000),
                        0, None, None, code, attempt_failure=True,
                        provider_status=provider_status)
@@ -704,7 +728,7 @@ async def forward(request: Request, body: dict, kind: str, db: Session, key: Api
             charged = cost if code in ("invalid_provider_usage", "invalid_provider_response") else 0
             billed = reservation.cents if charged else 0
             await service.settle(reservation, charged, billed)
-            record(db, request, key, model, aggregate, status,
+            await record(db, request, key, model, aggregate, status,
                    round((perf_counter() - started) * 1000),
                    charged, None, None, code, billed, provider_status=provider_status)
             return error(status, code, code)
@@ -712,18 +736,37 @@ async def forward(request: Request, body: dict, kind: str, db: Session, key: Api
         billed = charge(model, counts[1] if counts else None,
                         counts[2] if counts else None, reservation.cents)
         await service.settle(reservation, actual, billed)
-        record(db, request, key, model, aggregate, status,
+        await record(db, request, key, model, aggregate, status,
                round((perf_counter() - started) * 1000), actual,
                counts[1] if counts else None, counts[2] if counts else None, None, billed,
                reasoning_tokens=reasoning_count(raw_payload, protocol) if counts else None)
         return JSONResponse(payload, headers=(
             {"X-Gateway-Usage-Estimated": "true"} if estimated else None
         ))
+    except asyncio.CancelledError:
+        if reservation is not None and not (kind == "chat" and body["stream"]):
+            with CancelScope(shield=True):
+                await service.settle(
+                    reservation, reservation.tokens if sent_upstream else 0,
+                    reservation.cents if sent_upstream else 0,
+                )
+                if sent_upstream:
+                    await record(db, request, key, model, aggregate, 499,
+                                 round((perf_counter() - started) * 1000),
+                                 reservation.tokens, None, None, "client_disconnected",
+                                 reservation.cents)
+        raise
+    except HTTPException as exc:
+        if reservation is not None and str(exc.detail).endswith("concurrency_exceeded"):
+            await service.settle(reservation, 0, 0)
+            return error(exc.status_code, str(exc.detail), str(exc.detail))
+        raise
     except RedisError as exc:
         unavailable(exc)
     finally:
         if not deferred_close:
-            await service.client.aclose()
+            with CancelScope(shield=True):
+                await service.close()
 
 
 @gateway_router.post("/chat/completions")
