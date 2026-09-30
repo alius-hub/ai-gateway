@@ -8,6 +8,7 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,7 +19,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.list_filters import filter_expression
 from app.core.responses import success_response
-from app.db.models import AuditEvent, RequestLog, UsageRecord, User
+from app.db.models import ApiKey, AuditEvent, RequestLog, UsageRecord, User
 from app.db.session import get_db
 from app.modules.gateway.archive import s3_client
 from app.modules.identity.router import actor, require_platform
@@ -115,13 +116,21 @@ IMAGE_DATA = re.compile(r"^data:(image/(?:png|jpeg|gif|webp|avif));base64,([A-Za
                         re.IGNORECASE)
 
 
-def serialize(item: RequestLog, usage: UsageRecord | None) -> dict:
+def serialize(item: RequestLog, usage: UsageRecord | None, api_key: ApiKey | None = None) -> dict:
+    tps = None
+    if (item.endpoint == "/v1/chat/completions" and item.http_status == 200
+            and usage is not None and usage.output_tokens is not None
+            and item.latency_ms is not None and item.latency_ms > 0):
+        tps = round(usage.output_tokens * 1000 / item.latency_ms, 2)
     return {
         "request_id": item.request_id,
         "created_at": item.created_at.isoformat(),
         "organization_id": item.organization_id,
         "project_id": item.project_id,
         "api_key_id": item.api_key_id,
+        "api_key_masked": item.api_key_masked or (
+            f"{api_key.key_prefix}****" if api_key is not None else None),
+        "api_key_snapshot": item.api_key_masked is not None,
         "model": item.public_model_name,
         "model_type": item.model_type,
         "provider_id": item.provider_id,
@@ -132,6 +141,7 @@ def serialize(item: RequestLog, usage: UsageRecord | None) -> dict:
         "endpoint": item.endpoint,
         "http_status": item.http_status,
         "latency_ms": item.latency_ms,
+        "tps": tps,
         "ttft_ms": item.ttft_ms,
         "tpot_ms": float(item.tpot_ms) if item.tpot_ms is not None else None,
         "error_code": item.error_code,
@@ -269,8 +279,10 @@ async def list_request_logs(
         statement.order_by(RequestLog.created_at.desc(), RequestLog.id.desc())
         .offset((page - 1) * page_size).limit(page_size)
     ).all()
+    key_ids = {item.api_key_id for item, _usage in rows if item.api_key_id is not None}
+    keys = {key.id: key for key in db.scalars(select(ApiKey).where(ApiKey.id.in_(key_ids)))}
     return success_response({
-        "items": [serialize(item, usage) for item, usage in rows],
+        "items": [serialize(item, usage, keys.get(item.api_key_id)) for item, usage in rows],
         "page": page, "page_size": page_size, "total": total,
     }).model_dump()
 
@@ -284,7 +296,7 @@ async def get_request_log(
     if item is None:
         raise HTTPException(404, "调用日志不存在")
     usage = db.scalar(select(UsageRecord).where(UsageRecord.request_log_id == item.id))
-    result = serialize(item, usage)
+    result = serialize(item, usage, db.get(ApiKey, item.api_key_id) if item.api_key_id else None)
     result["archive"] = None
     result["images"] = []
     settings = get_settings()
@@ -321,6 +333,53 @@ async def get_request_log(
                 result["archive"] = {"status": "unavailable", "files": []}
                 break
     return success_response(result).model_dump()
+
+
+MAX_RAW_PREVIEW_BYTES = 2 * 1024 * 1024
+
+
+def archived_preview(prefix: str, bucket: str, filename: str) -> dict | None:
+    client = s3_client()
+    try:
+        obj = client.get_object(Bucket=bucket, Key=f"{prefix}/{filename}")
+    except client.exceptions.NoSuchKey:
+        return None
+    stream = obj["Body"]
+    try:
+        body = stream.read(MAX_RAW_PREVIEW_BYTES + 1)
+    finally:
+        stream.close()
+    return {"filename": filename, "text": body[:MAX_RAW_PREVIEW_BYTES].decode("utf-8", "replace"),
+            "truncated": len(body) > MAX_RAW_PREVIEW_BYTES,
+            "size_bytes": obj.get("ContentLength")}
+
+
+@router.get("/requests/{request_id}/raw/{filename}")
+async def preview_request_raw(
+    request_id: str,
+    filename: Literal[
+        "request.bin", "upstream_request.bin", "upstream_response.bin", "response.bin",
+    ],
+    db: Session = Depends(get_db), user: User = Depends(actor),
+) -> dict:
+    require_platform(user)
+    settings = get_settings()
+    if not settings.log_archive_enabled:
+        raise HTTPException(404, "原始内容归档未启用")
+    item = db.scalar(select(RequestLog).where(RequestLog.request_id == request_id))
+    if item is None:
+        raise HTTPException(404, "调用日志不存在")
+    for offset in (0, 1):
+        try:
+            result = await asyncio.to_thread(
+                archived_preview, archive_prefix(item, offset),
+                settings.log_archive_bucket, filename,
+            )
+        except Exception:
+            raise HTTPException(503, "原始内容暂时不可用，请稍后重试") from None
+        if result is not None:
+            return success_response(result).model_dump()
+    raise HTTPException(404, "原始文件不存在或尚未上传，请稍后重新打开详情")
 
 
 @router.get("/requests/{request_id}/images/{index}")

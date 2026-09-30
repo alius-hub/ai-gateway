@@ -39,6 +39,8 @@ export interface CallLog {
   organization_id: number | null;
   project_id: number | null;
   api_key_id: number | null;
+  api_key_masked: string | null;
+  api_key_snapshot: boolean;
   model: string;
   model_type: string;
   provider_id: number | null;
@@ -49,6 +51,7 @@ export interface CallLog {
   endpoint: string;
   http_status: number;
   latency_ms: number | null;
+  tps: number | null;
   ttft_ms: number | null;
   tpot_ms: number | null;
   error_code: string | null;
@@ -82,9 +85,9 @@ type CallPage = {
     total: number;
 };
 
-export async function listCallLogs(page: number, requestId: string, filters?: FilterGroup): Promise<CallPage> {
+export async function listCallLogs(page: number, requestId: string, filters?: FilterGroup, pageSize = 20): Promise<CallPage> {
   const response = await http.get<ApiEnvelope<CallPage>, ApiEnvelope<CallPage>>(
-    "/logs/requests", { params: { page, page_size: 20, request_id: requestId || undefined, filters: encodeFilter(filters) } },
+    "/logs/requests", { params: { page, page_size: pageSize, request_id: requestId || undefined, filters: encodeFilter(filters) } },
   );
   return response.data;
 }
@@ -101,4 +104,13 @@ export async function getCallImage(requestId: string, index: number): Promise<Bl
     `/logs/requests/${encodeURIComponent(requestId)}/images/${index}`,
     { responseType: "blob" },
   );
+}
+
+export type RawCallFile = "request.bin" | "upstream_request.bin" | "upstream_response.bin" | "response.bin";
+export interface RawCallPreview { filename: RawCallFile; text: string; truncated: boolean; size_bytes: number | null }
+export async function getCallRaw(requestId: string, filename: RawCallFile): Promise<RawCallPreview> {
+  const response = await http.get<ApiEnvelope<RawCallPreview>, ApiEnvelope<RawCallPreview>>(
+    `/logs/requests/${encodeURIComponent(requestId)}/raw/${filename}`,
+  );
+  return response.data;
 }

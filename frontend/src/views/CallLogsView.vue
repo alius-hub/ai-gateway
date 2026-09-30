@@ -4,7 +4,9 @@ import { useRoute } from "vue-router";
 
 import AppListFilter from "@/AppListFilter.vue";
 import AppFilterTags from "@/AppFilterTags.vue";
-import { getCallImage, getCallLog, listCallLogs, type CallLog, type CallLogDetail } from "@/api/logs";
+import AppPagination from "@/AppPagination.vue";
+import { getCallImage, getCallLog, getCallRaw, listCallLogs, type CallLog, type CallLogDetail, type RawCallFile, type RawCallPreview } from "@/api/logs";
+import { isAxiosError } from "axios";
 import type { FilterGroup } from "@/types/filter";
 import { listFilterFields } from "@/utils/listFilterFields";
 import { showToast } from "@/utils/toast";
@@ -12,6 +14,7 @@ import { showToast } from "@/utils/toast";
 const items = ref<CallLog[]>([]);
 const route = useRoute();
 const page = ref(1);
+const pageSize = ref(20);
 const total = ref(0);
 const query = ref("");
 const activeQuery = ref("");
@@ -19,18 +22,60 @@ const filters = ref<FilterGroup>({ mode: "and", conditions: [] });
 const loading = ref(false);
 const selected = ref<CallLogDetail | null>(null);
 const detailLoading = ref(false);
+const rawFiles: { name: RawCallFile; label: string }[] = [
+  { name: "request.bin", label: "客户端请求" },
+  { name: "upstream_request.bin", label: "上游请求" },
+  { name: "upstream_response.bin", label: "上游响应" },
+  { name: "response.bin", label: "客户端响应" },
+];
+const activeFile = ref<RawCallFile>("upstream_response.bin");
+const rawPreview = ref<RawCallPreview | null>(null);
+const rawLoading = ref(false);
+const rawError = ref("");
+const pretty = ref(true);
+let rawGeneration = 0;
+const rawText = computed(() => {
+  const text = rawPreview.value?.text ?? "";
+  if (!pretty.value) return text;
+  try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
+});
+const headerGroups = computed(() => [
+  { label: "客户端请求头", value: selected.value?.archive?.manifest?.request_headers },
+  { label: "上游请求头", value: selected.value?.archive?.manifest?.upstream_request_headers },
+  { label: "上游响应头", value: selected.value?.archive?.manifest?.upstream_response_headers },
+  { label: "客户端响应头", value: selected.value?.archive?.manifest?.response_headers },
+]);
+
+async function loadRaw(filename: RawCallFile = activeFile.value) {
+  if (!selected.value) return;
+  const current = ++rawGeneration;
+  const requestId = selected.value.request_id;
+  activeFile.value = filename;
+  rawPreview.value = null;
+  rawError.value = "";
+  rawLoading.value = true;
+  try {
+    const preview = await getCallRaw(requestId, filename);
+    if (current === rawGeneration) rawPreview.value = preview;
+  } catch (error) {
+    if (current !== rawGeneration) return;
+    const detail = isAxiosError(error) ? error.response?.data?.detail : undefined;
+    rawError.value = typeof detail === "string" ? detail : "读取原始内容失败，请重试";
+  } finally {
+    if (current === rawGeneration) rawLoading.value = false;
+  }
+}
 const previews = ref<Record<number, string>>({});
 let generation = 0;
 let detailGeneration = 0;
 
-const pages = computed(() => Math.max(1, Math.ceil(total.value / 20)));
 
 async function load() {
   const current = ++generation;
   items.value = [];
   loading.value = true;
   try {
-    const result = await listCallLogs(page.value, activeQuery.value, filters.value);
+    const result = await listCallLogs(page.value, activeQuery.value, filters.value, pageSize.value);
     if (current !== generation) return;
     items.value = result.items;
     total.value = result.total;
@@ -53,13 +98,18 @@ function applyFilters(value: FilterGroup) {
   void load();
 }
 
-function changePage(next: number) {
-  page.value = next;
+function changePageSize(next: number) {
+  pageSize.value = next;
+  page.value = 1;
   void load();
 }
 
 async function openDetail(requestId: string) {
   const current = ++detailGeneration;
+  rawGeneration++;
+  rawPreview.value = null;
+  rawError.value = "";
+  rawLoading.value = false;
   clearPreviews();
   detailLoading.value = true;
   selected.value = null;
@@ -68,6 +118,7 @@ async function openDetail(requestId: string) {
     if (current !== detailGeneration) return;
     selected.value = detail;
     detailLoading.value = false;
+    if (detail.archive?.status === "stored") void loadRaw("upstream_response.bin");
     for (const image of detail.images) {
       if (image.kind === "url") continue;
       try {
@@ -92,6 +143,10 @@ function clearPreviews() {
 
 function closeDetail() {
   detailGeneration++;
+  rawGeneration++;
+  rawPreview.value = null;
+  rawLoading.value = false;
+  rawError.value = "";
   selected.value = null;
   detailLoading.value = false;
   clearPreviews();
@@ -136,41 +191,41 @@ onUnmounted(() => {
     </div>
     <div class="page-card call-table-wrap">
       <table class="call-table">
-        <thead><tr><th>时间</th><th>请求 ID</th><th>模型</th><th>接入模型 ID</th><th>来源 IP</th><th>状态</th><th>耗时</th><th>输入 / 输出 Token</th><th>操作</th></tr></thead>
+        <thead><tr><th>时间</th><th>请求 ID</th><th>模型</th><th>API Key</th><th>接入模型 ID</th><th>来源 IP</th><th>状态</th><th>耗时</th><th title="输出 Token（含思考）÷ 总耗时（秒）">TPS (Token/s)</th><th>输入 / 输出 Token</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="item in items" :key="item.request_id">
             <td>{{ new Date(item.created_at).toLocaleString() }}</td>
             <td class="request-id">{{ item.request_id }}</td>
             <td>{{ item.model }}</td>
+            <td class="request-id" :title="item.api_key_snapshot ? `Key #${item.api_key_id} · 调用时的脱敏快照` : '历史日志未记录尾部，仅显示当前已存前缀'">{{ item.api_key_masked || (item.api_key_id ? `Key #${item.api_key_id}` : '—') }}</td>
             <td>{{ item.provider_model_id ?? "-" }}</td>
             <td>{{ item.requester_ip }}</td>
             <td>{{ item.http_status }}<span v-if="item.error_code"> · {{ item.error_code }}</span></td>
             <td>{{ item.latency_ms ?? "-" }} ms</td>
+            <td>{{ item.tps == null ? '—' : item.tps.toFixed(2) }}</td>
             <td>{{ item.input_tokens ?? "-" }} / {{ item.output_tokens ?? "-" }}</td>
             <td><button type="button" @click="openDetail(item.request_id)">详情</button></td>
           </tr>
-          <tr v-if="!items.length"><td colspan="9" class="empty">{{ loading ? "正在加载..." : "暂无调用日志" }}</td></tr>
+          <tr v-if="!items.length"><td colspan="11" class="empty">{{ loading ? "正在加载..." : "暂无调用日志" }}</td></tr>
         </tbody>
       </table>
-      <footer class="call-pages">
-        <span>共 {{ total }} 条</span>
-        <button type="button" :disabled="page <= 1 || loading" @click="changePage(page - 1)">上一页</button>
-        <span>{{ page }} / {{ pages }}</span>
-        <button type="button" :disabled="page >= pages || loading" @click="changePage(page + 1)">下一页</button>
-      </footer>
+      <AppPagination v-model="page" :total="total" :page-size="pageSize" :disabled="loading" @change="load" @update:page-size="changePageSize" />
     </div>
     <div v-if="selected || detailLoading" class="app-modal-overlay" @click.self="closeDetail">
       <div class="app-modal-panel call-detail" role="dialog" aria-modal="true" aria-label="调用日志详情">
-        <header><h2>调用详情</h2><button type="button" @click="closeDetail">关闭</button></header>
+        <header class="detail-heading"><div><span class="detail-eyebrow">请求追踪</span><h2>调用详情</h2></div><div class="detail-heading-actions"><span v-if="selected" class="status-badge" :class="{ failed: selected.http_status >= 400 }">HTTP {{ selected.http_status }}</span><button type="button" @click="closeDetail">关闭</button></div></header>
+        <div class="detail-body">
         <p v-if="detailLoading">正在加载...</p>
         <template v-else-if="selected">
-          <p>请求 ID：{{ selected.request_id }}</p>
-          <p>模型：{{ selected.model }} · 状态：{{ selected.http_status }} · Token：{{ selected.total_tokens ?? "-" }}</p>
-          <p>接入模型 ID：{{ selected.provider_model_id ?? "-" }} · 上游状态：{{ selected.provider_status ?? "-" }} · 错误：{{ selected.error_code ?? "-" }}</p>
-          <p v-if="selected.error_message">{{ selected.error_message }}</p>
-          <p>来源 IP：{{ selected.requester_ip }} · 输入 Token：{{ selected.input_tokens ?? "-" }} · 输出 Token：{{ selected.output_tokens ?? "-" }}</p>
-          <p>思考 Token：{{ selected.reasoning_tokens ?? "-" }} · 非思考 Token：{{ selected.non_reasoning_tokens ?? "-" }}</p>
-          <p>TTFT：{{ selected.ttft_ms == null ? "-" : `${selected.ttft_ms} ms` }} · TPOT：{{ selected.tpot_ms == null ? "-" : `${selected.tpot_ms} ms/token` }} · 总耗时：{{ selected.latency_ms ?? "-" }} ms</p>
+          <div class="request-overview"><span>请求 ID</span><code>{{ selected.request_id }}</code><span>{{ new Date(selected.created_at).toLocaleString() }}</span></div>
+          <div class="metric-grid">
+            <div><span>调用模型</span><strong>{{ selected.model }}</strong><small>接入模型 #{{ selected.provider_model_id ?? '-' }}</small></div>
+            <div><span>总耗时</span><strong>{{ selected.latency_ms ?? '-' }} <small>ms</small></strong><small>上游状态 {{ selected.provider_status ?? '-' }}</small></div>
+            <div><span>Token 总量</span><strong>{{ selected.total_tokens ?? '-' }}</strong><small>输入 {{ selected.input_tokens ?? '-' }} / 输出 {{ selected.output_tokens ?? '-' }}</small></div>
+            <div><span>思考 / 非思考 Token</span><strong>{{ selected.reasoning_tokens ?? '-' }} / {{ selected.non_reasoning_tokens ?? '-' }}</strong><small>来源 {{ selected.requester_ip }}</small></div>
+          </div>
+          <div class="timing-strip"><span>TTFT <b>{{ selected.ttft_ms ?? '-' }} ms</b></span><span>TPOT <b>{{ selected.tpot_ms ?? '-' }} ms/token</b></span><span title="输出 Token（含思考）÷ 总耗时（秒）">TPS <b>{{ selected.tps == null ? '—' : selected.tps.toFixed(2) }} Token/s</b></span><span>接口 <b>{{ selected.endpoint }}</b></span></div>
+          <p v-if="selected.error_code || selected.error_message" class="detail-error">{{ selected.error_code }} {{ selected.error_message }}</p>
           <template v-if="selected.images.length">
             <h3>请求图片</h3>
             <div class="image-list">
@@ -191,24 +246,23 @@ onUnmounted(() => {
           <p v-else-if="selected.archive.status === 'unavailable'">归档暂时不可查询，请检查对象存储连接。</p>
           <template v-else>
             <p v-if="!selected.archive.manifest?.capture_complete" class="warning">本次原始内容采集不完整。</p>
-            <h3>原始文件</h3>
-            <div class="download-list">
-              <a v-for="(url, name) in selected.archive.downloads" :key="name"
-                 :href="url" target="_blank" rel="noopener noreferrer">{{ name }}（60 秒有效）</a>
-            </div>
-            <h3>客户端请求头</h3>
-            <pre>{{ JSON.stringify(selected.archive.manifest?.request_headers, null, 2) }}</pre>
-            <h3>上游请求头</h3>
-            <pre>{{ JSON.stringify(selected.archive.manifest?.upstream_request_headers, null, 2) }}</pre>
-            <h3>上游响应头</h3>
-            <pre>{{ JSON.stringify(selected.archive.manifest?.upstream_response_headers, null, 2) }}</pre>
-            <h3>客户端响应头</h3>
-            <pre>{{ JSON.stringify(selected.archive.manifest?.response_headers, null, 2) }}</pre>
+            <section class="raw-section">
+              <div class="section-heading"><h3>原始请求与响应</h3><p>直接查看调用链路中的原始内容，对照上游与客户端响应。</p></div>
+              <div class="raw-tabs" role="tablist" aria-label="原始内容类型"><button v-for="file in rawFiles" :key="file.name" type="button" role="tab" :aria-selected="activeFile === file.name" :class="{ active: activeFile === file.name }" @click="loadRaw(file.name)">{{ file.label }}</button></div>
+              <div class="raw-viewer">
+                <div class="raw-toolbar"><code>{{ activeFile }}</code><div><button type="button" @click="pretty = !pretty">{{ pretty ? '格式化' : '原文' }}</button><button type="button" :disabled="rawLoading" @click="loadRaw()">重新读取</button><a v-if="selected.archive.downloads?.[activeFile]" :href="selected.archive.downloads[activeFile]" target="_blank" rel="noopener noreferrer">下载完整文件</a></div></div>
+                <p v-if="rawLoading" class="raw-state">正在读取原始内容...</p><p v-else-if="rawError" class="raw-state warning">{{ rawError }}</p>
+                <template v-else-if="rawPreview"><p v-if="rawPreview.truncated" class="preview-limit">仅预览前 2 MB，完整内容请下载文件。</p><pre class="raw-code">{{ rawText || '（空文件）' }}</pre><div class="raw-footer">{{ rawPreview.size_bytes == null ? '' : `${rawPreview.size_bytes.toLocaleString()} 字节 · ` }}UTF-8 文本预览</div></template>
+              </div>
+              <details class="headers-section"><summary>请求与响应头</summary><div class="headers-grid"><section v-for="group in headerGroups" :key="group.label"><h4>{{ group.label }}</h4><pre>{{ JSON.stringify(group.value || [], null, 2) }}</pre></section></div></details>
+              <details class="archive-downloads"><summary>全部归档文件</summary><div class="download-list"><a v-for="(url, name) in selected.archive.downloads" :key="name" :href="url" target="_blank" rel="noopener noreferrer">{{ name }}</a></div><p>下载链接生成后 60 秒有效，过期后请重新打开详情。</p></details>
+            </section>
             <p v-for="image in selected.archive.manifest?.external_images" :key="image.url">
               外链图片：{{ image.url }} · {{ image.saved ? "已保存" : `未保存（${image.error}）` }}
             </p>
           </template>
         </template>
+        </div>
       </div>
     </div>
   </section>
@@ -230,7 +284,18 @@ th{background:#f7f9fa;color:#6d8090}
 .request-id{font-family:monospace}
 .empty{text-align:center;padding:36px}
 .call-pages{justify-content:flex-end;padding:12px 16px}
-.call-detail{box-sizing:border-box;width:90vw;height:90vh;height:90dvh;overflow:auto;padding:24px}
+.call-detail{box-sizing:border-box;width:80vw;height:90vh;height:90dvh;overflow:hidden;display:flex;flex-direction:column;padding:0;background:#f7f9fb}
+.detail-heading{padding:20px 26px;background:#fff;border-bottom:1px solid #e4ebef;flex-shrink:0}.detail-heading h2{margin:4px 0 0}
+.detail-eyebrow{font-size:11px;letter-spacing:2px;color:#217c70}.detail-heading-actions{display:flex;align-items:center;gap:14px}
+.status-badge{background:#e7f5ee;color:#217c70;border-radius:20px;padding:6px 12px;font-size:12px;font-weight:600}.status-badge.failed{background:#fff0f0;color:#b83232}
+.detail-body{padding:22px 26px;overflow:auto;min-height:0}.request-overview{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12px;color:#64748b;margin-bottom:18px}.request-overview code{color:#334155;overflow-wrap:anywhere}
+.metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.metric-grid>div{display:grid;gap:9px;padding:16px;background:#fff;border:1px solid #e4ebef;border-radius:12px;min-width:0}.metric-grid span,.metric-grid small{font-size:12px;color:#718096}.metric-grid strong{font-size:21px;color:#253a47;overflow-wrap:anywhere}
+.timing-strip{display:flex;gap:24px;flex-wrap:wrap;margin:16px 0 22px;font-size:12px;color:#64748b}.timing-strip b{font-weight:500;color:#34495a;margin-left:8px}.detail-error{padding:12px;background:#fff0f0;border-radius:8px;color:#b83232}
+.raw-section,.image-section{padding:20px;background:#fff;border:1px solid #e4ebef;border-radius:12px}.section-heading h3{margin:0}.section-heading p{margin:6px 0 16px}.raw-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.raw-tabs button{background:#f7f9fb;border-color:transparent;color:#64748b}.raw-tabs button.active{background:#e7f4f0;color:#176d62;border-color:#b8ded2;font-weight:600}
+.raw-viewer{border:1px solid #dce6ec;border-radius:10px;overflow:hidden}.raw-toolbar{padding:10px 14px;background:#f4f7f9;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;color:#64748b}.raw-toolbar>div{display:flex;gap:8px;align-items:center}.raw-toolbar button{min-height:28px;font-size:12px;padding:3px 10px}.raw-toolbar a{color:#217c70;text-decoration:none;margin-left:4px}
+.raw-code{margin:0;border-radius:0;padding:18px;max-height:44vh;min-height:160px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2}.raw-footer{padding:8px 14px;font-size:11px;color:#718096;background:#f7f9fb}.raw-state,.detail-empty{padding:28px;text-align:center;color:#64748b}.preview-limit{margin:0;padding:10px 14px;background:#fff7e6;color:#98661d;font-size:12px}
+.headers-section,.archive-downloads{margin-top:18px;border-top:1px solid #edf1f4;padding-top:14px}summary{cursor:pointer;color:#385466;font-size:13px;font-weight:600}.headers-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.headers-grid h4{font-size:12px;color:#64748b}.headers-grid pre{max-height:240px;white-space:pre-wrap;overflow-wrap:anywhere}.archive-downloads .download-list{margin-top:12px}.image-section{margin-top:18px}
+@media(max-width:760px){.call-detail{width:calc(100vw - 24px)}.detail-heading,.detail-body{padding:16px}.metric-grid,.headers-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.raw-section{padding:14px}.raw-toolbar>div{flex-wrap:wrap}}
 .call-detail h3{margin:18px 0 8px;font-size:14px}
 .download-list{display:flex;flex-wrap:wrap;gap:12px}
 .download-list a{color:#217c70;font-size:13px}

@@ -322,7 +322,10 @@ def record(db: Session, request: Request, key: ApiKey, model: ProviderModel,
         request.scope["call_archive"].request_id
         if "call_archive" in request.scope else f"req_{uuid4().hex}",
     )
+    raw_key = request.headers.get("authorization", "").partition(" ")[2].strip()
+    masked_key = f"{raw_key[:8]}****{raw_key[-4:]}" if len(raw_key) > 12 else None
     log = RequestLog(
+        api_key_masked=masked_key,
         request_id=f"req_{uuid4().hex}" if attempt_failure else request_id,
         organization_id=key.organization_id,
         project_id=key.project_id, api_key_id=key.id,

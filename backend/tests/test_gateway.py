@@ -700,6 +700,45 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(image_entries(json.dumps({"image": base64.b64encode(png).decode()})
                                        .encode())[0][0], "base64")
 
+    def test_raw_preview_requires_admin_limits_size_and_closes_storage_stream(self):
+        self.assertEqual(self.client.post("/v1/chat/completions", json=self.body,
+                                          headers=self.headers).status_code, 200)
+        request_id = self.db.query(RequestLog).one().request_id
+        url = f"/api/admin/v1/logs/requests/{request_id}/raw/upstream_response.bin"
+        self.assertEqual(self.client.get(url).status_code, 401)
+        app.dependency_overrides[actor] = lambda: self.db.get(User, 1)
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.db.get(User, 1).is_platform_admin = True
+        self.db.commit()
+        settings = get_settings().model_copy(update={
+            "log_archive_enabled": True, "log_archive_bucket": "call-logs",
+        })
+        client = MagicMock()
+        payload = '{"content":"你好","reasoning_content":"test"}'.encode()
+        streams = []
+
+        def object_at(**_kwargs):
+            stream = io.BytesIO(payload)
+            streams.append(stream)
+            return {"Body": stream, "ContentLength": len(payload)}
+
+        client.get_object.side_effect = object_at
+        with patch("app.modules.audit.router.get_settings", return_value=settings), \
+             patch("app.modules.audit.router.s3_client", return_value=client):
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["data"]["text"], payload.decode())
+            self.assertFalse(response.json()["data"]["truncated"])
+            self.assertTrue(streams[-1].closed)
+            with patch("app.modules.audit.router.MAX_RAW_PREVIEW_BYTES", 8):
+                response = self.client.get(url)
+                self.assertTrue(response.json()["data"]["truncated"])
+                self.assertEqual(len(response.json()["data"]["text"].encode()), 8)
+            self.assertEqual(self.client.get(url.replace("upstream_response.bin", "secret.bin"))
+                             .status_code, 422)
+            self.assertEqual(self.client.get(url.replace(request_id, "missing"))
+                             .status_code, 404)
+
     def test_raw_archive_preserves_headers_images_and_both_streams(self):
         key = self.db.get(ApiKey, 1)
         key.qps_limit = None
@@ -766,6 +805,30 @@ class GatewayTest(unittest.TestCase):
         listing = self.client.get("/api/admin/v1/logs/requests").json()["data"]
         self.assertEqual(listing["total"], 1)
         self.assertEqual(listing["items"][0]["request_id"], request_id)
+        raw_key = self.headers["Authorization"].split(" ", 1)[1]
+        masked = f"{raw_key[:8]}****{raw_key[-4:]}"
+        self.assertEqual(listing["items"][0]["api_key_masked"], masked)
+        self.assertTrue(listing["items"][0]["api_key_snapshot"])
+        self.assertNotIn(raw_key, json.dumps(listing))
+        log = self.db.query(RequestLog).one()
+        self.db.get(ApiKey, 1).key_prefix = "rotated"
+        self.db.commit()
+        unchanged = self.client.get("/api/admin/v1/logs/requests").json()["data"]["items"][0]
+        self.assertEqual(unchanged["api_key_masked"], masked)
+        log.api_key_masked = None
+        self.db.commit()
+        historical = self.client.get("/api/admin/v1/logs/requests").json()["data"]["items"][0]
+        self.assertEqual(historical["api_key_masked"], "rotated****")
+        self.assertFalse(historical["api_key_snapshot"])
+        log.api_key_masked = masked
+        log.latency_ms = 2000
+        self.db.commit()
+        measured = self.client.get("/api/admin/v1/logs/requests").json()["data"]["items"][0]
+        self.assertEqual(measured["tps"], 1.5)
+        log.latency_ms = 0
+        self.db.commit()
+        measured = self.client.get("/api/admin/v1/logs/requests").json()["data"]["items"][0]
+        self.assertIsNone(measured["tps"])
         filtered = self.client.get("/api/admin/v1/logs/requests", params={
             "filters": json.dumps({"mode": "and", "conditions": [
                 {"field": "total_tokens", "operator": "eq", "value": "5"},

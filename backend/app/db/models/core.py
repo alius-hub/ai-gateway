@@ -310,6 +310,8 @@ class RequestLog(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     request_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    api_key_masked: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    api_key_masked: Mapped[str | None] = mapped_column(String(32), nullable=True)
     organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     api_key_id: Mapped[int | None] = mapped_column(ForeignKey("api_keys.id"), nullable=True)
