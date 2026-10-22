@@ -65,7 +65,7 @@ class DebugRequest(ConnectionRequest):
     system_prompt: str = Field(default="", max_length=32000)
     temperature: float | None = Field(default=None, ge=0, le=2)
     top_p: float | None = Field(default=None, gt=0, le=1)
-    max_tokens: int | None = Field(default=None, ge=1, le=32768)
+    max_tokens: int | None = Field(default=None, ge=1, le=2147483647)
     stop: list[str] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
@@ -246,6 +246,9 @@ async def prepare_connection(db: Session, payload: ConnectionRequest) -> tuple[s
         return (payload.custom_protocol, str(payload.custom_base_url), model_name,
                 payload.custom_api_key.strip() if payload.custom_api_key else None, model_name, 60)
     model = resolve_model(db, payload)
+    if isinstance(payload, DebugRequest):
+        from app.modules.gateway.generation import validate_output_tokens
+        validate_output_tokens(model, payload.max_tokens or 1024)
     provider = db.get(Provider, model.provider_id)
     protocol = db.get(ProviderProtocol, model.protocol_id) if model.protocol_id else None
     secret = db.get(ProviderSecret, model.secret_id) if model.secret_id else None

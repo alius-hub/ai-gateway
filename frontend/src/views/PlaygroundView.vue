@@ -455,7 +455,7 @@ onUnmounted(() => {
             <label>温度 (0-2)<input v-model.number="temperature" :disabled="busy" type="number" min="0" max="2" step="0.1" /></label>
             <label>Top P (0-1)<input v-model.number="topP" :disabled="busy" type="number" min="0.01" max="1" step="0.05" /></label>
           </div>
-          <label>最大输出 Token<input v-model.number="maxTokens" :disabled="busy" type="number" min="1" max="32768" step="1" /></label>
+          <label>最大输出 Token<input v-model.number="maxTokens" :disabled="busy" type="number" min="1" max="2147483647" step="1" /></label>
           <label>停止词（每行一个，最多 4 个）<textarea v-model="stopText" :disabled="busy" rows="2" placeholder="可选" /></label>
           <h3>多轮对话</h3>
           <label class="check"><input v-model="useHistory" :disabled="busy" type="checkbox" />携带历史消息</label>
@@ -540,7 +540,7 @@ onUnmounted(() => {
       </section>
     </div>
     <Teleport to="body">
-      <div v-if="historyOpen" class="app-modal-overlay" @click.self="closeHistory">
+      <div v-if="historyOpen" class="app-modal-overlay" v-backdrop-close="closeHistory">
         <section ref="historyDialog" class="app-modal-panel history-dialog" role="dialog" aria-modal="true" aria-label="历史调试记录" tabindex="-1">
           <header class="history-dialog__header">
             <div><h2>{{ selectedRecord ? `调试详情 #${selectedRecord.id}` : "历史调试记录" }}</h2>
@@ -603,7 +603,7 @@ onUnmounted(() => {
           </div>
         </section>
       </div>
-      <div v-if="deleteTarget" class="app-modal-overlay app-modal-overlay--confirmation" @click.self="!deleting && (deleteTarget = null)">
+      <div v-if="deleteTarget" class="app-modal-overlay app-modal-overlay--confirmation" v-backdrop-close="() => { !deleting && (deleteTarget = null) }">
         <div class="app-modal-panel history-confirm" role="alertdialog" aria-modal="true" aria-label="删除调试记录">
           <h3>删除调试记录</h3>
           <p>确定删除「{{ deleteTarget.model_code }}」的这条调试记录吗？删除后无法恢复。</p>

@@ -57,7 +57,7 @@ class ChatBody(BaseModel):
     model_config = ConfigDict(extra="allow")
     model: str = Field(min_length=1)
     messages: list[dict[str, Any]] = Field(min_length=1)
-    max_tokens: int = Field(default=1024, ge=1, le=32768)
+    max_tokens: int = Field(default=1024, ge=1, le=2147483647)
     stream: bool = False
 
 
@@ -599,8 +599,18 @@ def prepare_attempts(db: Session, request: Request, body: dict, kind: str,
     candidates = [item for item in retry_candidates(db, aggregate, model, round_index)
                   if item.id not in excluded]
     attempts = []
+    token_limit_error = None
     for candidate in candidates:
         try:
+            if kind == "chat":
+                from app.modules.gateway.generation import validate_output_tokens
+                try:
+                    validate_output_tokens(candidate, body["max_tokens"])
+                except HTTPException as exc:
+                    token_limit_error = exc
+                    if len(candidates) == 1:
+                        raise
+                    continue
             protocol, base, secret, timeout = connection(db, candidate)
             url, headers, upstream_body = prepare(
                 protocol, base, candidate.provider_model_name, secret, body, kind,
@@ -612,6 +622,8 @@ def prepare_attempts(db: Session, request: Request, body: dict, kind: str,
             if len(candidates) == 1 or exc.status_code != 503:
                 raise
     if not attempts:
+        if token_limit_error is not None:
+            raise token_limit_error
         raise HTTPException(503, "model_unavailable")
     return key, aggregate, attempts
 

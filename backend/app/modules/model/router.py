@@ -88,6 +88,7 @@ class AccessModelCreate(BaseModel):
     region: str | None = Field(default=None, max_length=64)
     max_concurrency: int | None = Field(default=None, ge=1, le=100000)
     context_window: int | None = Field(default=None, ge=1, le=2147483647)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=2147483647)
     timeout_ms: int | None = Field(default=None, ge=1, le=600000)
     price_unit_k: int = Field(default=1, ge=1, le=1000000)
     input_price: Decimal | None = Field(default=None, ge=0, lt=1000000000000)
@@ -126,6 +127,7 @@ class AccessModelUpdate(BaseModel):
     region: str | None = Field(default=None, max_length=64)
     max_concurrency: int | None = Field(default=None, ge=1, le=100000)
     context_window: int | None = Field(default=None, ge=1, le=2147483647)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=2147483647)
     timeout_ms: int | None = Field(default=None, ge=1, le=600000)
     price_unit_k: int | None = Field(default=None, ge=1, le=1000000)
     input_price: Decimal | None = Field(default=None, ge=0, lt=1000000000000)
@@ -156,6 +158,7 @@ def serialize(item: ProviderModel, provider_base_url: str | None) -> dict:
         "base_url": item.base_url, "effective_base_url": item.base_url or provider_base_url,
         "region": item.region,
         "max_concurrency": item.max_concurrency, "context_window": item.context_window,
+        "max_output_tokens": item.max_output_tokens,
         "timeout_ms": item.timeout_ms,
         "status": item.status, "currency": item.currency,
         "price_unit_k": item.price_unit_k, "input_price": item.input_price,
@@ -207,6 +210,7 @@ def list_access_models(
             "region": (ProviderModel.region, "text"),
             "max_concurrency": (ProviderModel.max_concurrency, "number"),
             "context_window": (ProviderModel.context_window, "number"),
+            "max_output_tokens": (ProviderModel.max_output_tokens, "number"),
             "timeout_ms": (ProviderModel.timeout_ms, "number"),
             "input_price": (ProviderModel.input_price, "decimal"),
             "output_price": (ProviderModel.output_price, "decimal"),

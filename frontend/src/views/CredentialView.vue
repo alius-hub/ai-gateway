@@ -368,7 +368,7 @@ function applyFilters(value: FilterGroup) {
     </div>
     <div v-else class="page-card credential-notice">仅平台管理员可访问凭证管理。</div>
 
-    <div v-if="formOpen" class="app-modal-overlay" @click.self="!busy && (formOpen = false)">
+    <div v-if="formOpen" class="app-modal-overlay" v-backdrop-close="() => { !busy && (formOpen = false) }">
       <form class="app-modal-panel credential-dialog" role="dialog" aria-modal="true" :aria-label="editing ? '编辑 Key' : '新建 Key'" @submit.prevent="save">
         <header><h2>{{ editing ? "编辑" : "新建" }}{{ title }}</h2><button type="button" aria-label="关闭" :disabled="busy" @click="formOpen = false">×</button></header>
         <div class="credential-fields">
@@ -423,7 +423,7 @@ function applyFilters(value: FilterGroup) {
         <footer><button type="button" :disabled="busy" @click="formOpen = false">取消</button><button type="submit" :disabled="busy">{{ busy ? "保存中..." : "保存" }}</button></footer>
       </form>
     </div>
-    <div v-if="pending" class="app-modal-overlay app-modal-overlay--confirmation" @click.self="!busy && (pending = null)">
+    <div v-if="pending" class="app-modal-overlay app-modal-overlay--confirmation" v-backdrop-close="() => { !busy && (pending = null) }">
       <div class="app-modal-panel credential-confirm" role="alertdialog" aria-modal="true" aria-label="确认操作">
         <h2>确认{{ pending.action === "rotate" ? "轮换" : pending.item.status === 1 ? "停用" : "启用" }} Key</h2>
         <p>{{ pending.action === "rotate" ? "旧 Key 将立即失效；新 Key 可由管理员再次查看，请注意妥善保管。" : `确定修改「${pending.item.name}」的状态吗？` }}</p>
@@ -434,7 +434,7 @@ function applyFilters(value: FilterGroup) {
         <footer><button type="button" :disabled="busy" @click="pending = null">取消</button><button type="button" :class="{ danger: pending.action === 'rotate' || pending.item.status === 1 }" :disabled="busy" @click="confirmAction">确定</button></footer>
       </div>
     </div>
-    <div v-if="secret" class="app-modal-overlay" @click.self="closeSecret">
+    <div v-if="secret" class="app-modal-overlay" v-backdrop-close="closeSecret">
       <div class="app-modal-panel credential-viewer" role="dialog" aria-modal="true" aria-label="API Key 和调用示例">
         <header class="credential-viewer-header"><h2>API Key 与调用示例</h2><button type="button" aria-label="关闭" @click="closeSecret">×</button></header>
         <p>仅平台管理员可再次查看。示例使用当前站点地址；请勿在截图、日志或聊天中传播密钥。</p>

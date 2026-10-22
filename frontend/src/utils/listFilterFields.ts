@@ -77,7 +77,7 @@ export const listFilterFields: Record<string, FilterField[]> = {
     select("tiered_pricing", "阶梯定价", [
       { label: "是", value: "1" }, { label: "否", value: "0" },
     ]),
-    number("max_concurrency", "最大并发"), number("context_window", "最大 Token 容量"),
+    number("max_concurrency", "最大并发"), number("context_window", "最大 Token 容量"), number("max_output_tokens", "最大输出 Token"),
     number("timeout_ms", "超时时间（毫秒）"), status,
   ],
   "aggregate-models": [

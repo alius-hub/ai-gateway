@@ -74,7 +74,7 @@ function submit() {
 </script>
 
 <template>
-  <div v-if="open" class="app-modal-overlay" @click.self="emit('close')">
+  <div v-if="open" class="app-modal-overlay" v-backdrop-close="() => { emit('close') }">
     <form class="app-modal-panel filter-dialog" role="dialog" aria-modal="true" :aria-label="t('高级筛选')" @submit.prevent="submit">
       <header><h2>{{ t("高级筛选") }}</h2><button class="app-control-button app-control-button--icon" type="button" :aria-label="t('关闭')" @click="emit('close')">×</button></header>
       <div class="filter-dialog__mode">

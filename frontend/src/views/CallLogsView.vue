@@ -211,7 +211,7 @@ onUnmounted(() => {
       </table>
       <AppPagination v-model="page" :total="total" :page-size="pageSize" :disabled="loading" @change="load" @update:page-size="changePageSize" />
     </div>
-    <div v-if="selected || detailLoading" class="app-modal-overlay" @click.self="closeDetail">
+    <div v-if="selected || detailLoading" class="app-modal-overlay" v-backdrop-close="closeDetail">
       <div class="app-modal-panel call-detail" role="dialog" aria-modal="true" aria-label="调用日志详情">
         <header class="detail-heading"><div><span class="detail-eyebrow">请求追踪</span><h2>调用详情</h2></div><div class="detail-heading-actions"><span v-if="selected" class="status-badge" :class="{ failed: selected.http_status >= 400 }">HTTP {{ selected.http_status }}</span><button type="button" @click="closeDetail">关闭</button></div></header>
         <div class="detail-body">

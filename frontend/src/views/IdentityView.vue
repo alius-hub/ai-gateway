@@ -621,7 +621,7 @@ function applyFilters(value: FilterGroup) {
       />
     </div>
 
-    <div v-if="formOpen" class="app-modal-overlay" @click.self="formOpen = false">
+    <div v-if="formOpen" class="app-modal-overlay" v-backdrop-close="() => { formOpen = false }">
       <form class="app-modal-panel identity-dialog" role="dialog" aria-modal="true" :aria-label="t(editing ? '编辑' : '新建') + t(settings[kind].title)" @submit.prevent="submitForm">
         <div class="identity-dialog__head"><div><p>{{ t("用户与权限") }}</p><h2>{{ t(editing ? "编辑" : "新建") }}{{ t(settings[kind].title) }}</h2></div><button type="button" aria-label="关闭" @click="formOpen = false">×</button></div>
         <div class="identity-fields">
@@ -640,7 +640,7 @@ function applyFilters(value: FilterGroup) {
       </form>
     </div>
 
-    <div v-if="keyTarget" class="app-modal-overlay" @click.self="closeKeys">
+    <div v-if="keyTarget" class="app-modal-overlay" v-backdrop-close="closeKeys">
       <div class="app-modal-panel identity-dialog identity-dialog--keys" role="dialog" aria-modal="true" :aria-label="`${keyTarget.name} 的 API Key`">
         <div class="identity-dialog__head">
           <div><p>{{ t("项目 API Key") }}</p><h2>{{ keyTarget.name }}</h2></div>
@@ -679,7 +679,7 @@ function applyFilters(value: FilterGroup) {
       </div>
     </div>
 
-    <div v-if="memberTarget" class="app-modal-overlay" @click.self="closeMembers">
+    <div v-if="memberTarget" class="app-modal-overlay" v-backdrop-close="closeMembers">
       <div class="app-modal-panel identity-dialog identity-dialog--wide" role="dialog" aria-modal="true" :aria-label="t('成员管理')">
         <div class="identity-dialog__head"><div><p>{{ t("成员管理") }}</p><h2>{{ display(memberTarget, settings[kind].primary) }}</h2></div><button type="button" aria-label="关闭" @click="closeMembers">×</button></div>
         <div class="identity-member-columns">
@@ -720,7 +720,7 @@ function applyFilters(value: FilterGroup) {
       </div>
     </div>
 
-    <div v-if="passwordTarget" class="app-modal-overlay" @click.self="passwordTarget = null">
+    <div v-if="passwordTarget" class="app-modal-overlay" v-backdrop-close="() => { passwordTarget = null }">
       <form class="app-modal-panel identity-dialog" role="dialog" aria-modal="true" :aria-label="t('重置密码')" @submit.prevent="submitPassword">
         <div class="identity-dialog__head"><div><p>{{ passwordTarget.username }}</p><h2>{{ t("重置密码") }}</h2></div><button type="button" aria-label="关闭" @click="passwordTarget = null">×</button></div>
         <div class="identity-fields"><label><span>{{ t("新密码（至少 8 位）") }}<span class="identity-required" aria-hidden="true"> *</span></span><input v-model="newPassword" type="password" minlength="8" maxlength="128" required autocomplete="new-password" /></label></div>
@@ -728,7 +728,7 @@ function applyFilters(value: FilterGroup) {
       </form>
     </div>
 
-    <div v-if="confirmation" class="app-modal-overlay app-modal-overlay--confirmation" @click.self="!busy && (confirmation = null)">
+    <div v-if="confirmation" class="app-modal-overlay app-modal-overlay--confirmation" v-backdrop-close="() => { !busy && (confirmation = null) }">
       <div class="app-modal-panel identity-dialog identity-dialog--confirm" role="alertdialog" aria-modal="true" :aria-label="t('确认操作')">
         <div class="identity-dialog__head"><div><p>{{ t("用户与权限") }}</p><h2>{{ t("确认操作") }}</h2></div><button type="button" aria-label="关闭" :disabled="busy" @click="confirmation = null">×</button></div>
         <p class="identity-confirm-message">{{ t(confirmation.type === "status" ? `确定${confirmation.item.status === 1 ? "停用" : "启用"}该记录吗？` : `确定移除 ${confirmation.item.username} 吗？`) }}</p>

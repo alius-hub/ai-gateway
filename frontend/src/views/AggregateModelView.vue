@@ -292,7 +292,7 @@ onMounted(() => { void loadChoices(); });
       </div>
       <AppPagination v-if="total" v-model="page" v-model:page-size="pageSize" :total="total" :disabled="loading" />
     </div>
-    <div v-if="open" class="app-modal-overlay" @click.self="!busy && (open = false)">
+    <div v-if="open" class="app-modal-overlay" v-backdrop-close="() => { !busy && (open = false) }">
       <div class="app-modal-panel aggregate-modal aggregate-modal--form" role="dialog" aria-modal="true" aria-label="聚合模型配置">
         <h2>{{ editing ? "编辑聚合模型" : "新建聚合模型" }}</h2>
         <form class="aggregate-form" @submit.prevent="save">
@@ -337,7 +337,7 @@ onMounted(() => { void loadChoices(); });
         </form>
       </div>
     </div>
-    <div v-if="detailTarget" class="app-modal-overlay" @click.self="closeDetail">
+    <div v-if="detailTarget" class="app-modal-overlay" v-backdrop-close="closeDetail">
       <div class="app-modal-panel aggregate-modal aggregate-modal--detail" role="dialog" aria-modal="true" :aria-label="`${detailTarget.public_model_name} 节点详情`">
         <div class="aggregate-detail-heading">
           <div><h2>{{ detailTarget.public_model_name }} · 节点详情</h2><p>最近 24 小时该聚合模型的成功调用；TTFT 为首个输出耗时，TPS 为输出 Token / 输出耗时。</p></div>
@@ -374,7 +374,7 @@ onMounted(() => { void loadChoices(); });
         <p v-else class="aggregate-empty">节点详情加载失败，请关闭后重试。</p>
       </div>
     </div>
-    <div v-if="confirmTarget" class="app-modal-overlay app-modal-overlay--confirmation" @click.self="!busy && (confirmTarget = null)">
+    <div v-if="confirmTarget" class="app-modal-overlay app-modal-overlay--confirmation" v-backdrop-close="() => { !busy && (confirmTarget = null) }">
       <div class="app-modal-panel aggregate-modal" role="alertdialog" aria-modal="true" aria-label="停用聚合模型">
         <h2>确认停用</h2>
         <p>确定停用聚合模型「{{ confirmTarget.public_model_name }}」吗？</p>

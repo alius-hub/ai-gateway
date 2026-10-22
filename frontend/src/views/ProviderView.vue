@@ -270,7 +270,7 @@ watch([page, pageSize], () => void load(), { immediate: true });
       </div>
       <AppPagination v-if="total" v-model="page" v-model:page-size="pageSize" :total="total" :disabled="loading" />
     </div>
-    <div v-if="formOpen" class="app-modal-overlay" @click.self="!busy && (formOpen = false)">
+    <div v-if="formOpen" class="app-modal-overlay" v-backdrop-close="() => { !busy && (formOpen = false) }">
       <form class="app-modal-panel provider-dialog" :class="{ 'provider-dialog--wide': !editing }" role="dialog" aria-modal="true" :aria-label="t(editing ? '编辑供应商' : '新建供应商')" @submit.prevent="save">
         <header><h2>{{ t(editing ? "编辑供应商" : "新建供应商") }}</h2><button type="button" :disabled="busy" aria-label="关闭" @click="formOpen = false">×</button></header>
         <div class="provider-fields">
@@ -312,7 +312,7 @@ watch([page, pageSize], () => void load(), { immediate: true });
         <footer><button type="button" :disabled="busy" @click="formOpen = false">{{ t("取消") }}</button><button type="submit" :disabled="busy">{{ t(busy ? "保存中..." : "保存") }}</button></footer>
       </form>
     </div>
-    <div v-if="connectionTarget" class="app-modal-overlay" @click.self="!connectionBusy && closeConnections()">
+    <div v-if="connectionTarget" class="app-modal-overlay" v-backdrop-close="() => { !connectionBusy && closeConnections() }">
       <div class="app-modal-panel provider-dialog provider-dialog--wide" role="dialog" aria-modal="true" :aria-label="t('连接配置')">
         <header><h2>{{ connectionTarget.name }} · {{ t("连接配置") }}</h2><button type="button" aria-label="关闭" :disabled="connectionBusy" @click="closeConnections">×</button></header>
         <section class="provider-section">
@@ -354,14 +354,14 @@ watch([page, pageSize], () => void load(), { immediate: true });
         </section>
       </div>
     </div>
-    <div v-if="pendingStatus" class="app-modal-overlay app-modal-overlay--confirmation" @click.self="!connectionBusy && (pendingStatus = null)">
+    <div v-if="pendingStatus" class="app-modal-overlay app-modal-overlay--confirmation" v-backdrop-close="() => { !connectionBusy && (pendingStatus = null) }">
       <div class="app-modal-panel provider-dialog" role="alertdialog" aria-modal="true" :aria-label="t('确认操作')">
         <header><h2>{{ t("确认操作") }}</h2></header>
         <p class="provider-confirm">{{ t(`确定${pendingStatus.status === 0 ? "停用" : "启用"}此配置吗？`) }}</p>
         <footer><button type="button" :disabled="connectionBusy" @click="pendingStatus = null">{{ t("取消") }}</button><button type="button" :disabled="connectionBusy" @click="confirmConnectionStatus">{{ t("确认") }}</button></footer>
       </div>
     </div>
-    <div v-if="confirmTarget" class="app-modal-overlay app-modal-overlay--confirmation" @click.self="!busy && (confirmTarget = null)">
+    <div v-if="confirmTarget" class="app-modal-overlay app-modal-overlay--confirmation" v-backdrop-close="() => { !busy && (confirmTarget = null) }">
       <div class="app-modal-panel provider-dialog" role="alertdialog" aria-modal="true" :aria-label="t('确认操作')">
         <header><h2>{{ t("确认操作") }}</h2><button type="button" :disabled="busy" aria-label="关闭" @click="confirmTarget = null">×</button></header>
         <p class="provider-confirm">{{ t(`确定${confirmTarget.status === 1 ? "停用" : "启用"} ${confirmTarget.name} 吗？`) }}</p>

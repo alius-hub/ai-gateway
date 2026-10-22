@@ -405,7 +405,7 @@ void loadProjects();
       <AppPagination v-else v-model="rulePage" :total="ruleTotal" :page-size="rulePageSize" :disabled="rulesLoading" @change="loadRules" @update:page-size="changeRulePageSize" />
     </div>
 
-    <div v-if="settingsOpen" class="app-modal-overlay" @click.self="closeSettings">
+    <div v-if="settingsOpen" class="app-modal-overlay" v-backdrop-close="closeSettings">
       <form class="app-modal-panel alerts-modal" role="dialog" aria-modal="true" aria-label="飞书设置" @submit.prevent="saveSettings">
         <h3>飞书 SaaS 应用设置</h3>
         <p>机器人需要具备发送消息权限并加入目标群。群聊 ID 留空时自动查找唯一群聊，需具备群信息读取权限；机器人在多个群中时请指定群聊 ID。</p>
@@ -420,7 +420,7 @@ void loadProjects();
         </div>
       </form>
     </div>
-    <div v-if="ruleOpen" class="app-modal-overlay" @click.self="ruleOpen = false">
+    <div v-if="ruleOpen" class="app-modal-overlay" v-backdrop-close="() => { ruleOpen = false }">
       <form class="app-modal-panel alerts-modal" role="dialog" aria-modal="true" aria-label="告警规则" @submit.prevent="submitRule">
         <h3>{{ editId ? '编辑告警规则' : '新增告警规则' }}</h3>
         <label><span>规则名称 <span class="required-mark" aria-hidden="true">*</span></span><input v-model="form.name" class="app-control-input" required maxlength="128" /></label>
@@ -451,7 +451,7 @@ void loadProjects();
         </div>
       </form>
     </div>
-    <div v-if="testResultName !== null" class="app-modal-overlay" @click.self="testResultName = null">
+    <div v-if="testResultName !== null" class="app-modal-overlay" v-backdrop-close="() => { testResultName = null }">
       <div class="app-modal-panel alerts-modal" role="dialog" aria-modal="true" aria-label="测试推送结果">
         <h3>测试推送结果</h3><p>规则：{{ testResultName }}</p>
         <div v-for="(result, index) in testResults" :key="index" class="test-result">
@@ -461,7 +461,7 @@ void loadProjects();
         <div class="modal-actions"><button class="app-control-button" type="button" @click="testResultName = null">关闭</button></div>
       </div>
     </div>
-    <div v-if="deleteTarget" class="app-modal-overlay app-modal-overlay--confirmation" @click.self="deleteTarget = null">
+    <div v-if="deleteTarget" class="app-modal-overlay app-modal-overlay--confirmation" v-backdrop-close="() => { deleteTarget = null }">
       <div class="app-modal-panel alerts-modal" role="alertdialog" aria-modal="true" aria-label="删除规则">
         <h3>删除规则？</h3><p>已有事件的规则不能删除，可以在编辑中将其停用。</p>
         <div class="modal-actions">

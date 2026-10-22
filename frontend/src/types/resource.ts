@@ -57,6 +57,7 @@ export interface AccessModelItem {
   region: string | null;
   max_concurrency: number | null;
   context_window: number | null;
+  max_output_tokens: number | null;
   timeout_ms: number | null;
   price_unit_k: number;
   input_price: number | null;
